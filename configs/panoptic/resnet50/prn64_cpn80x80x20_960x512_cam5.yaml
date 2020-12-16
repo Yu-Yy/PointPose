@@ -2,13 +2,13 @@ CUDNN:
   BENCHMARK: true
   DETERMINISTIC: false
   ENABLED: true
-BACKBONE_MODEL: 'pose_resnet'
+BACKBONE_MODEL: 'pose_higher_hrnet' #'pose_resnet' 
 MODEL: 'multi_person_posenet'
 DATA_DIR: ''
-GPUS: '0'
-OUTPUT_DIR: 'output'
+GPUS: '0,1,2,3,4,5'
+OUTPUT_DIR: 'output_hrnet_cmu'
 LOG_DIR: 'log'
-WORKERS: 4
+WORKERS: 4 
 PRINT_FREQ: 100
 
 DATASET:
@@ -23,10 +23,15 @@ DATASET:
   SCALE_FACTOR: 0.35
   TEST_SUBSET: 'validation'
   TRAIN_SUBSET: 'train'
-  ROOTIDX: 2
-  CAMERA_NUM: 5
-NETWORK:
-  PRETRAINED_BACKBONE: "models/pose_resnet50_panoptic.pth.tar"
+  ROOTIDX: # in coco standard
+    - 11
+    - 12
+  CAMERA_NUM: 5 #5 
+  IMAGE_SIZE:
+    - 1920
+    - 1080
+NETWORK: # for the 
+  PRETRAINED_BACKBONE: 'models/pose_higher_hrnet_w32_512.pth' #'models/pose_resnet50_panoptic.pth.tar' # change this 
   PRETRAINED:  ''  # 'models/pytorch/imagenet/resnet50-19c8e357.pth'
   TARGET_TYPE: gaussian
   IMAGE_SIZE:
@@ -34,11 +39,76 @@ NETWORK:
   - 512
   HEATMAP_SIZE:
   - 240
-  - 128
+  - 128 # 其实用不到
   SIGMA: 3
-  NUM_JOINTS: 15
+  NUM_JOINTS: 17
   USE_GT: False
-POSE_RESNET:
+  POOLING: False
+
+MODEL_EXTRA:
+  FINAL_CONV_KERNEL: 1
+  PRETRAINED_LAYERS: ['*']
+  STEM_INPLANES: 64
+  TAG_PER_JOINT: True
+  STAGE2:
+    NUM_MODULES: 1
+    NUM_BRANCHES: 2
+    BLOCK: BASIC
+    NUM_BLOCKS:
+    - 4
+    - 4
+    NUM_CHANNELS:
+    - 32
+    - 64
+    FUSE_METHOD: SUM
+  STAGE3:
+    NUM_MODULES: 4
+    NUM_BRANCHES: 3
+    BLOCK: BASIC
+    NUM_BLOCKS:
+    - 4
+    - 4
+    - 4
+    NUM_CHANNELS:
+    - 32
+    - 64
+    - 128
+    FUSE_METHOD: SUM
+  STAGE4:
+    NUM_MODULES: 3
+    NUM_BRANCHES: 4
+    BLOCK: BASIC
+    NUM_BLOCKS:
+    - 4
+    - 4
+    - 4
+    - 4
+    NUM_CHANNELS:
+    - 32
+    - 64
+    - 128
+    - 256
+    FUSE_METHOD: SUM
+  DECONV: # 这怎么只设置了一个，没有后续的继续操作
+    NUM_DECONVS: 1
+    NUM_CHANNELS:
+    - 32
+    KERNEL_SIZE:
+    - 4
+    NUM_BASIC_BLOCKS: 4
+    CAT_OUTPUT:
+    - True
+
+LOSS:
+  NUM_STAGES: 2
+  AE_LOSS_TYPE: exp
+  WITH_AE_LOSS: [True, False]
+  PUSH_LOSS_FACTOR: [0.001, 0.001]
+  PULL_LOSS_FACTOR: [0.001, 0.001]
+  WITH_HEATMAPS_LOSS: [True, True]
+  HEATMAPS_LOSS_FACTOR: [1.0, 1.0]
+
+POSE_RESNET:   # 替换成higher_HRnet
   FINAL_CONV_KERNEL: 1
   DECONV_WITH_BIAS: False
   NUM_DECONV_LAYERS: 3
@@ -61,9 +131,10 @@ TRAIN:
   RESUME: true
   OPTIMIZER: adam
   LR: 0.0001
+
 TEST:
   MODEL_FILE: 'model_best.pth.tar'
-  BATCH_SIZE: 4
+  BATCH_SIZE: 10
 DEBUG:
   DEBUG: true
   SAVE_HEATMAPS_GT: true
@@ -83,6 +154,10 @@ MULTI_PERSON:
     - 20
   MAX_PEOPLE_NUM: 10
   THRESHOLD: 0.3
+  VOXEL_SIZE: 
+    - 100.0
+    - 100.0
+    - 100.0
 PICT_STRUCT:
   GRID_SIZE:
     - 2000.0
