@@ -37,6 +37,8 @@ SHELF_JOINTS_DEF = {
     'Top-Head': 13
 }
 
+#COCO2PAN = []
+
 LIMBS = [
     [0, 1],
     [1, 2],
@@ -61,14 +63,15 @@ class Shelf(JointsDataset):
         self.joints_def = SHELF_JOINTS_DEF
         super().__init__(cfg, image_set, is_train, transform)
         self.limbs = LIMBS
-        self.num_joints = len(SHELF_JOINTS_DEF)
+        self.num_joints = len(SHELF_JOINTS_DEF) #14
         self.cam_list = [0, 1, 2, 3, 4]
         self.num_views = len(self.cam_list)
         self.frame_range = list(range(300,  601))
-
+        self.dataset_root = "/Extra/panzhiyu/Shelf/"
         self.pred_pose2d = self._get_pred_pose2d()
         self.db = self._get_db()
-
+        # 重写shelf dataset
+        
         self.db_size = len(self.db)
 
     def _get_pred_pose2d(self):
@@ -89,7 +92,7 @@ class Shelf(JointsDataset):
         datafile = os.path.join(self.dataset_root, 'actorsGT.mat')
         data = scio.loadmat(datafile)
         actor_3d = np.array(np.array(data['actor3D'].tolist()).tolist()).squeeze()  # num_person * num_frame
-
+        # 读取数据时，切换一下顺序
         num_person = len(actor_3d)
         num_frames = len(actor_3d[0])
 
@@ -123,7 +126,7 @@ class Shelf(JointsDataset):
                                 np.reshape(joints_vis, (-1, 1)), 2, axis=1))
 
                 pred_index = '{}_{}'.format(k, i)
-                preds = self.pred_pose2d[pred_index]
+                preds = self.pred_pose2d[pred_index] # 改一下这个pred
                 preds = [np.array(p["pred"]) for p in preds]
                 db.append({
                     'image': osp.join(self.dataset_root, image),

@@ -47,8 +47,9 @@ class JointsDataset(Dataset):
         self.color_rgb = cfg.DATASET.COLOR_RGB
 
         self.target_type = cfg.NETWORK.TARGET_TYPE
-        self.image_size = np.array(cfg.NETWORK.IMAGE_SIZE)
-        self.heatmap_size = np.array(cfg.NETWORK.HEATMAP_SIZE)
+        self.image_size = np.array(cfg.NETWORK.IMAGE_SIZE)  # image_size 变化
+        # self.heatmap_size = np.array(cfg.NETWORK.HEATMAP_SIZE) # heatmap_size 改为原尺度的一半
+        self.heatmap_size = np.array([cfg.NETWORK.IMAGE_SIZE[0]/2,cfg.NETWORK.IMAGE_SIZE[1]/2],dtype=np.int16)
         self.sigma = cfg.NETWORK.SIGMA
         self.use_different_joints_weight = cfg.LOSS.USE_DIFFERENT_JOINTS_WEIGHT
         self.joints_weight = 1
@@ -73,8 +74,9 @@ class JointsDataset(Dataset):
     def __getitem__(self, idx):
         db_rec = copy.deepcopy(self.db[idx])
 
-        image_file = db_rec['image']
-
+        image_file = db_rec['image'] # file name
+        
+        # data_numpy = np.zeros([1920,1080,3]) # 
         if self.data_format == 'zip':
             from utils import zipreader
             data_numpy = zipreader.imread(
@@ -84,39 +86,49 @@ class JointsDataset(Dataset):
                 image_file, cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
 
         if data_numpy is None:
-            # logger.error('=> fail to read {}'.format(image_file))
-            # raise ValueError('Fail to read {}'.format(image_file))
-            return None, None, None, None, None, None
+            # data_numpy = np.zeros([1920,1080,3]) # 暂时修正CMU图片下载缺失问题
+            data_numpy = cv2.imread(
+                "/Extra/panzhiyu/CMU_data/160906_ian5/hdImgs/00_03/00_03_00000000.jpg", cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION) # 随便先读一个
+ 
+            
+        # if data_numpy is None: # 读图暂时无所谓
+        #     # logger.error('=> fail to read {}'.format(image_file))
+        #     # raise ValueError('Fail to read {}'.format(image_file))
 
-        if self.color_rgb:
-            data_numpy = cv2.cvtColor(data_numpy, cv2.COLOR_BGR2RGB)
+        #     return None, None, None, None, None, None # 读空了
+
+        
+        # need to be recovered 
+        # if self.color_rgb:
+        #     data_numpy = cv2.cvtColor(data_numpy, cv2.COLOR_BGR2RGB)
 
         joints = db_rec['joints_2d']
         joints_vis = db_rec['joints_2d_vis']
         joints_3d = db_rec['joints_3d']
         joints_3d_vis = db_rec['joints_3d_vis']
 
-        nposes = len(joints)
-        assert nposes <= self.maximum_person, 'too many persons'
+        nposes = len(joints) # number of person
+        assert nposes <= self.maximum_person, 'too many persons' # 人数限制
 
         height, width, _ = data_numpy.shape
-        c = np.array([width / 2.0, height / 2.0])
-        s = get_scale((width, height), self.image_size)
+        c = np.array([width / 2.0, height / 2.0]) # 
+        s = get_scale((width, height), self.image_size) # (960 * 512) # 读入和实际
         r = 0
 
-        trans = get_affine_transform(c, s, r, self.image_size)
+        trans = get_affine_transform(c, s, r, self.image_size)  # 2D GT 做同样的变换 # 表示平移和旋转关系
+
         input = cv2.warpAffine(
             data_numpy,
             trans, (int(self.image_size[0]), int(self.image_size[1])),
             flags=cv2.INTER_LINEAR)
 
         if self.transform:
-            input = self.transform(input)
+            input = self.transform(input)  # 外界给 mean var处理
 
         for n in range(nposes):
             for i in range(len(joints[0])):
                 if joints_vis[n][i, 0] > 0.0:
-                    joints[n][i, 0:2] = affine_transform(
+                    joints[n][i, 0:2] = affine_transform(  # joints 为 GT 处理的结果
                         joints[n][i, 0:2], trans)
                     if (np.min(joints[n][i, :2]) < 0 or
                             joints[n][i, 0] >= self.image_size[0] or
@@ -126,16 +138,21 @@ class JointsDataset(Dataset):
         if 'pred_pose2d' in db_rec and db_rec['pred_pose2d'] != None:
             # For convenience, we use predicted poses and corresponding values at the original heatmaps
             # to generate 2d heatmaps for Campus and Shelf dataset.
-            # You can also use other 2d backbone trained on COCO to generate 2d heatmaps directly.
+            # You can also use other 2d backbone trained on COCO to generate 2d heatmaps directly. # predict the heatmap
             pred_pose2d = db_rec['pred_pose2d']
             for n in range(len(pred_pose2d)):
                 for i in range(len(pred_pose2d[n])):
                     pred_pose2d[n][i, 0:2] = affine_transform(pred_pose2d[n][i, 0:2], trans)
-
-            input_heatmap = self.generate_input_heatmap(pred_pose2d)
+            
+            # input_heatmap = torch.zeros([200,160]) # for testing the rgbinput campus
+            input_heatmap = self.generate_input_heatmap(pred_pose2d) # 暂时将该行注释，不需要input_heatmap
             input_heatmap = torch.from_numpy(input_heatmap)
-        else:
-            input_heatmap = torch.zeros(self.cfg.NETWORK.NUM_JOINTS, self.heatmap_size[1], self.heatmap_size[0])
+        else: # panoptic 用GT heatmap 训练一下 ！！
+            # input_heatmap = torch.zeros(self.cfg.NETWORK.NUM_JOINTS, self.heatmap_size[1], self.heatmap_size[0])
+            # ground truth 测试
+            input_heatmap = self.generate_input_heatmap(joints) 
+            input_heatmap = torch.from_numpy(input_heatmap)  # 在getitem 过程中
+
 
         target_heatmap, target_weight = self.generate_target_heatmap(
             joints, joints_vis)
@@ -155,7 +172,7 @@ class JointsDataset(Dataset):
             joints_3d_u[i] = joints_3d[i][:, 0:3]
             joints_3d_vis_u[i] = joints_3d_vis[i][:, 0:3]
 
-        target_3d = self.generate_3d_target(joints_3d)
+        target_3d = self.generate_3d_target(joints_3d) # target 3d
         target_3d = torch.from_numpy(target_3d)
 
         if isinstance(self.root_id, int):
@@ -175,7 +192,7 @@ class JointsDataset(Dataset):
             'rotation': r,
             'camera': db_rec['camera']
         }
-
+        
         return input, target_heatmap, target_weight, target_3d, meta, input_heatmap
 
     def compute_human_scale(self, pose, joints_vis):
@@ -260,7 +277,7 @@ class JointsDataset(Dataset):
 
         space_size = self.space_size
         space_center = self.space_center
-        cube_size = self.initial_cube_size
+        cube_size = self.initial_cube_size # create the heatmap ?
         grid1Dx = np.linspace(-space_size[0] / 2, space_size[0] / 2, cube_size[0]) + space_center[0]
         grid1Dy = np.linspace(-space_size[1] / 2, space_size[1] / 2, cube_size[1]) + space_center[1]
         grid1Dz = np.linspace(-space_size[2] / 2, space_size[2] / 2, cube_size[2]) + space_center[2]
@@ -300,8 +317,10 @@ class JointsDataset(Dataset):
         :param joints_vis: [num_joints, 3]
         :return: input_heatmap
         '''
+        # heatmap and image size changed based on different dataset
+        
         nposes = len(joints)
-        num_joints = self.cfg.NETWORK.NUM_JOINTS
+        num_joints = self.cfg.NETWORK.NUM_JOINTS # for the coco training
 
         assert self.target_type == 'gaussian', \
             'Only support gaussian map now!'
@@ -353,6 +372,7 @@ class JointsDataset(Dataset):
 
                     target[joint_id][img_y[0]:img_y[1], img_x[0]:img_x[1]] = np.maximum(target[joint_id][img_y[0]:img_y[1], img_x[0]:img_x[1]],
                         g[g_y[0]:g_y[1], g_x[0]:g_x[1]])
+                
                 target = np.clip(target, 0, 1)
 
         return target

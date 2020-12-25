@@ -158,7 +158,7 @@ def save_debug_3d_images(config, meta, preds, prefix):
 
     basename = os.path.basename(prefix)
     dirname = os.path.dirname(prefix)
-    dirname1 = os.path.join(dirname, '3d_joints')
+    dirname1 = os.path.join(dirname, '3d_joints') # 3d_joints 保存
 
     if not os.path.exists(dirname1):
         os.makedirs(dirname1)

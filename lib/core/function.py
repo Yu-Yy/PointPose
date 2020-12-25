@@ -31,18 +31,21 @@ def train_3d(config, model, optimizer, loader, epoch, output_dir, writer_dict, d
         model.module.backbone.eval()  # Comment out this line if you want to train 2D backbone jointly
 
     accumulation_steps = 4
+    accumulation_loss_3d = [0 for _ in range(accumulation_steps)]
     accu_loss_3d = 0
 
     end = time.time()
-    for i, (inputs, targets_2d, weights_2d, targets_3d, meta, input_heatmap) in enumerate(loader):
+    # multi_loader_training shelf and cmu
+    for i, (inputs, targets_2d, weights_2d, targets_3d, meta, input_heatmap) in enumerate(loader): # 基本沿用原dataloader形式，加一个3D PAF 和 2D PAF
+
         data_time.update(time.time() - end)
 
         if 'panoptic' in config.DATASET.TEST_DATASET:
-            pred, heatmaps, grid_centers, loss_2d, loss_3d, loss_cord = model(views=inputs, meta=meta,
+            pred, heatmaps, grid_centers, loss_2d, loss_3d, loss_cord = model(views= inputs, meta=meta, # inputs
                                                                               targets_2d=targets_2d,
                                                                               weights_2d=weights_2d,
-                                                                              targets_3d=targets_3d[0])
-        elif 'campus' in config.DATASET.TEST_DATASET or 'shelf' in config.DATASET.TEST_DATASET:
+                                                                              targets_3d=targets_3d[0], input_heatmaps=input_heatmap)
+        elif 'campus' in config.DATASET.TEST_DATASET or 'shelf' in config.DATASET.TEST_DATASET: #elif
             pred, heatmaps, grid_centers, loss_2d, loss_3d, loss_cord = model(meta=meta, targets_3d=targets_3d[0],
                                                                               input_heatmaps=input_heatmap)
 
@@ -58,16 +61,23 @@ def train_3d(config, model, optimizer, loader, epoch, output_dir, writer_dict, d
 
         if loss_cord > 0:
             optimizer.zero_grad()
-            (loss_2d + loss_cord).backward()
+            (loss_2d + loss_cord + loss_3d/accumulation_steps).backward() # add loss 3d 
             optimizer.step()
 
-        if accu_loss_3d > 0 and (i + 1) % accumulation_steps == 0:
-            optimizer.zero_grad()
-            accu_loss_3d.backward()
-            optimizer.step()
-            accu_loss_3d = 0.0
-        else:
-            accu_loss_3d += loss_3d / accumulation_steps
+        # if sum(accumulation_loss_3d) > 0 and (i + 1) % accumulation_steps == 0:    #accu_loss_3d
+        #     with torch.autograd.set_detect_anomaly(True):
+        #         optimizer.zero_grad()
+        #         # torch.sum(accumulation_loss_3d).backward()
+        #         # accu_loss_3d = sum(accumulation_loss_3d)
+        #         # accu_loss_3d.backward()
+        #         (accumulation_loss_3d[0] + accumulation_loss_3d[1] + accumulation_loss_3d[2] + accumulation_loss_3d[3]).backward()
+        #         optimizer.step()
+        #         # accu_loss_3d = 0.0
+        #         accumulation_loss_3d = [0 for _ in range(accumulation_steps)]
+        #     # accumulation_loss_3d = torch.zeros(accumulation_steps,requires_grad=True)
+        # else:
+        #     # accu_loss_3d += loss_3d / accumulation_steps # 这里的loss反传策略？accu策略？
+        #     accumulation_loss_3d[(i % accumulation_steps)] = loss_3d / accumulation_steps
 
         batch_time.update(time.time() - end)
         end = time.time()
@@ -104,7 +114,7 @@ def train_3d(config, model, optimizer, loader, epoch, output_dir, writer_dict, d
             prefix2 = '{}_{:08}'.format(
                 os.path.join(output_dir, 'train'), i)
 
-            save_debug_3d_cubes(config, meta[0], grid_centers, prefix2)
+            save_debug_3d_cubes(config, meta[0], grid_centers, prefix2) # debug file is no use
             save_debug_3d_images(config, meta[0], pred, prefix2)
 
 
@@ -119,12 +129,14 @@ def validate_3d(config, model, loader, output_dir):
         for i, (inputs, targets_2d, weights_2d, targets_3d, meta, input_heatmap) in enumerate(loader):
             data_time.update(time.time() - end)
             if 'panoptic' in config.DATASET.TEST_DATASET:
-                pred, heatmaps, grid_centers, _, _, _ = model(views=inputs, meta=meta, targets_2d=targets_2d,
-                                                              weights_2d=weights_2d, targets_3d=targets_3d[0])
-            elif 'campus' in config.DATASET.TEST_DATASET or 'shelf' in config.DATASET.TEST_DATASET:
-                pred, heatmaps, grid_centers, _, _, _ = model(meta=meta, targets_3d=targets_3d[0],
+                pred, heatmaps, grid_centers, _, _, _ = model(views = inputs, meta=meta, targets_2d=targets_2d, #inputs
+                                                              weights_2d=weights_2d, targets_3d=targets_3d[0], input_heatmaps=None)  # input_heatmaps=input_heatmap
+            elif 'campus' in config.DATASET.TEST_DATASET or 'shelf' in config.DATASET.TEST_DATASET:  #el
+                pred, heatmaps, grid_centers, _, _, _ = model(meta=meta, targets_3d=targets_3d[0], # 用图片做输入测试 # using the validate code
                                                               input_heatmaps=input_heatmap)
             pred = pred.detach().cpu().numpy()
+
+        
             for b in range(pred.shape[0]):
                 preds.append(pred[b])
 
@@ -165,7 +177,7 @@ def validate_3d(config, model, loader, output_dir):
         logger.info(msg)
         metric = np.mean(aps)
     elif 'campus' in config.DATASET.TEST_DATASET or 'shelf' in config.DATASET.TEST_DATASET:
-        actor_pcp, avg_pcp, _, recall = loader.dataset.evaluate(preds)
+        actor_pcp, avg_pcp, _, recall = loader.dataset.evaluate(preds) #
         msg = '     | Actor 1 | Actor 2 | Actor 3 | Average | \n' \
               ' PCP |  {pcp_1:.2f}  |  {pcp_2:.2f}  |  {pcp_3:.2f}  |  {pcp_avg:.2f}  |\t Recall@500mm: {recall:.4f}'.format(
                 pcp_1=actor_pcp[0]*100, pcp_2=actor_pcp[1]*100, pcp_3=actor_pcp[2]*100, pcp_avg=avg_pcp*100, recall=recall)

@@ -42,6 +42,10 @@ def main():
     args = parse_args()
     logger, final_output_dir, tb_log_dir = create_logger(
         config, args.cfg, 'eval_map')
+    # final_output_dir = "/home/panzhiyu/project/3d_pose/voxelpose-pytorch/output/panoptic/multi_person_posenet_50/prn64_cpn80x80x20_960x512_cam5/" #using the panotic training model
+    # final_output_dir = "/home/panzhiyu/project/3d_pose/voxelpose-pytorch/output/shelf_synthetic/multi_person_posenet_50/prn64_cpn80x80x20/" # using the weight of shelf to eval the campus dataset
+    # final_output_dir = "/home/panzhiyu/project/3d_pose/voxelpose-pytorch/output/campus_synthetic/multi_person_posenet_50/prn64_cpn80x80x20/"
+    # final_output_dir = "/home/panzhiyu/project/3d_pose/voxelpose-pytorch/output_new/panoptic/multi_person_posenet_50/new/"
     cfg_name = os.path.basename(args.cfg).split('.')[0]
 
     gpus = [int(i) for i in config.GPUS.split(',')]
@@ -55,7 +59,7 @@ def main():
             transforms.ToTensor(),
             normalize,
         ]))
-
+ 
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=config.TEST.BATCH_SIZE * len(gpus),
@@ -84,16 +88,30 @@ def main():
     preds = []
     with torch.no_grad():
         for i, (inputs, targets_2d, weights_2d, targets_3d, meta, input_heatmap) in enumerate(tqdm(test_loader)):
+            # (inputs, targets_2d, weights_2d, targets_3d, meta, input_heatmap) = test_dataset[220*10-1]
+            # if len(input_heatmap) == 0:
+            #     print("empty")
+            #     assert len(input_heatmap) != 0,'f****k' # 逻辑错了 
+            # if (i<=218):
+            #     continue
+
             if 'panoptic' in config.DATASET.TEST_DATASET:
-                pred, _, _, _, _, _ = model(views=inputs, meta=meta)
-            elif 'campus' in config.DATASET.TEST_DATASET or 'shelf' in config.DATASET.TEST_DATASET:
-                pred, _, _, _, _, _ = model(meta=meta, input_heatmaps=input_heatmap)
+                # pred, _, _, _, _, _ = model(views=inputs, meta=meta)
+                pred, _, _, _, _, _ = model(views=inputs,meta=meta) # 测试GT
+            elif 'campus' in config.DATASET.TEST_DATASET:
+                # pred, _, _, _, _, _ = model(views=inputs,meta=meta, input_heatmaps=None)
+                pred, _, _, _, _, _ = model(views=None,meta=meta, input_heatmaps=input_heatmap)
+            elif 'shelf' in config.DATASET.TEST_DATASET:
+                pred, _, _, _, _, _ = model(views=None,meta=meta, input_heatmaps=input_heatmap)
 
             pred = pred.detach().cpu().numpy()
-            for b in range(pred.shape[0]):
+
+            # print(pred.shape) # [batch,10,15,5] 截取有效人数
+
+            for b in range(pred.shape[0]): #按照batch 进行 合并,综合跑完全部结果，再做AP测试
                 preds.append(pred[b])
 
-        tb = PrettyTable()
+        tb = PrettyTable() # 展示table
         if 'panoptic' in config.DATASET.TEST_DATASET:
             mpjpe_threshold = np.arange(25, 155, 25)
             aps, recs, mpjpe, _ = test_dataset.evaluate(preds)
@@ -102,7 +120,7 @@ def main():
             tb.add_row(['Recall'] + [f'{re * 100:.2f}' for re in recs])
             print(tb)
             print(f'MPJPE: {mpjpe:.2f}mm')
-        else:
+        else: # campus shelf的标准不一致
             actor_pcp, avg_pcp, bone_person_pcp, _ = test_dataset.evaluate(preds)
             tb.field_names = ['Bone Group'] + [f'Actor {i+1}' for i in range(len(actor_pcp))] + ['Average']
             for k, v in bone_person_pcp.items():

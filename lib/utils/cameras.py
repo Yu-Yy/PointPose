@@ -50,7 +50,7 @@ def project_point_radial(x, R, T, f, c, k, p):
 
     y = y * corr + torch.ger(torch.cat([p[1], p[0]]).view(-1), r2.view(-1))
     ypixel = (f * y) + c
-    return torch.t(ypixel)
+    return torch.t(ypixel) # N*2 points in pixel space
 
 
 def project_pose(x, camera):

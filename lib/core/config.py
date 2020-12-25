@@ -11,7 +11,7 @@ import os
 import yaml
 
 import numpy as np
-from easydict import EasyDict as edict
+from easydict import EasyDict as edict # 
 
 config = edict()
 
@@ -29,6 +29,7 @@ config.MODEL_EXTRA = edict()
 config.MODEL_EXTRA.PRETRAINED_LAYERS = ['*']
 config.MODEL_EXTRA.FINAL_CONV_KERNEL = 1
 config.MODEL_EXTRA.STEM_INPLANES = 64
+config.MODEL_EXTRA.TAG_PER_JOINT = True
 
 config.MODEL_EXTRA.STAGE2 = edict()
 config.MODEL_EXTRA.STAGE2.NUM_MODULES = 1
@@ -80,6 +81,7 @@ config.NETWORK.TARGET_TYPE = 'gaussian'
 config.NETWORK.AGGRE = True
 config.NETWORK.USE_GT = False
 config.NETWORK.BETA = 100.0
+config.NETWORK.POOLING = False
 
 # pose_resnet related params
 config.POSE_RESNET = edict()
@@ -91,6 +93,13 @@ config.POSE_RESNET.NUM_DECONV_KERNELS = [4, 4, 4]
 config.POSE_RESNET.FINAL_CONV_KERNEL = 1
 
 config.LOSS = edict()
+config.LOSS.NUM_STAGES = 1
+config.LOSS.WITH_HEATMAPS_LOSS = [True,]
+config.LOSS.HEATMAPS_LOSS_FACTOR = [1.0,]
+config.LOSS.WITH_AE_LOSS = [True,False]
+config.LOSS.AE_LOSS_TYPE = 'max'
+config.LOSS.PUSH_LOSS_FACTOR = [0.001,]
+config.LOSS.PULL_LOSS_FACTOR = [0.001,]
 config.LOSS.USE_TARGET_WEIGHT = True
 config.LOSS.USE_DIFFERENT_JOINTS_WEIGHT = False
 
@@ -109,6 +118,7 @@ config.DATASET.COLOR_RGB = False
 config.DATASET.FLIP = True
 config.DATASET.DATA_AUGMENTATION = True
 config.DATASET.CAMERA_NUM = 5
+config.DATASET.IMAGE_SIZE = [1920,1080]
 
 # training data augmentation
 config.DATASET.SCALE_FACTOR = 0
@@ -182,6 +192,7 @@ config.MULTI_PERSON = edict()
 config.MULTI_PERSON.SPACE_SIZE = np.array([4000.0, 5200.0, 2400.0])
 config.MULTI_PERSON.SPACE_CENTER = np.array([300.0, 300.0, 300.0])
 config.MULTI_PERSON.INITIAL_CUBE_SIZE = np.array([24, 32, 16])
+config.MULTI_PERSON.VOXEL_SIZE = np.array([100.0, 100.0, 100.0])
 config.MULTI_PERSON.MAX_PEOPLE_NUM = 10
 config.MULTI_PERSON.THRESHOLD = 0.1
 
@@ -216,9 +227,9 @@ def _update_dict(k, v):
 def update_config(config_file):
     exp_config = None
     with open(config_file) as f:
-        exp_config = edict(yaml.load(f, Loader=yaml.FullLoader))
+        exp_config = edict(yaml.load(f, Loader=yaml.FullLoader)) # yaml load 进来 跟 easydict 合作 form the dictionary
         for k, v in exp_config.items():
-            if k in config:
+            if k in config: # in dict compare the keys value
                 if isinstance(v, dict):
                     _update_dict(k, v)
                 else:

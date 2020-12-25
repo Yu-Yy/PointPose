@@ -40,7 +40,7 @@ def nms(root_cubes, max_num):
     #     root_cubes_nms[b] = (mx == root_cubes[b]).float() * root_cubes[b]
     root_cubes_nms = max_pool(root_cubes)
     root_cubes_nms_reshape = root_cubes_nms.reshape(batch_size, -1)
-    topk_values, topk_index = root_cubes_nms_reshape.topk(max_num)
+    topk_values, topk_index = root_cubes_nms_reshape.topk(max_num) # 按照最大数目排序
     topk_unravel_index = get_index(topk_index, root_cubes[0].shape)
 
     return topk_values, topk_unravel_index

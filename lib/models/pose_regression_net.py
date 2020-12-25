@@ -9,6 +9,7 @@ import torch.nn.functional as F
 
 from models.v2v_net import V2VNet
 from models.project_layer import ProjectLayer
+from models.roi_sample_layer import RoISampleLayer
 
 
 class SoftArgmaxLayer(nn.Module):
@@ -21,8 +22,11 @@ class SoftArgmaxLayer(nn.Module):
         channel = x.size(1)
         x = x.reshape(batch_size, channel, -1, 1)
         # x = F.softmax(x, dim=2)
+
         x = F.softmax(self.beta * x, dim=2)
+
         grids = grids.unsqueeze(1)
+
         x = torch.mul(x, grids)
         x = torch.sum(x, dim=2)
         return x
@@ -31,23 +35,34 @@ class SoftArgmaxLayer(nn.Module):
 class PoseRegressionNet(nn.Module):
     def __init__(self, cfg):
         super(PoseRegressionNet, self).__init__()
+        
         self.grid_size = cfg.PICT_STRUCT.GRID_SIZE
         self.cube_size = cfg.PICT_STRUCT.CUBE_SIZE
-
+        self.num_joints = cfg.NETWORK.NUM_JOINTS
         self.project_layer = ProjectLayer(cfg)
-        self.v2v_net = V2VNet(cfg.NETWORK.NUM_JOINTS, cfg.NETWORK.NUM_JOINTS)
+        # name_list = ['feat1','feat2']
+        # self.project_layer = RoISampleLayer(cfg,name_list)
+
+
+        self.v2v_net = V2VNet(cfg.NETWORK.NUM_JOINTS, cfg.NETWORK.NUM_JOINTS) # output is the number of the joints
+
+        # self.v2v_net = V2VNet(cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0], cfg.NETWORK.NUM_JOINTS)
+        
         self.soft_argmax_layer = SoftArgmaxLayer(cfg)
 
     def forward(self, all_heatmaps, meta, grid_centers):
         batch_size = all_heatmaps[0].shape[0]
-        num_joints = all_heatmaps[0].shape[1]
+        # num_joints = all_heatmaps[0].shape[1]
+        num_joints = self.num_joints
         device = all_heatmaps[0].device
         pred = torch.zeros(batch_size, num_joints, 3, device=device)
         cubes, grids = self.project_layer(all_heatmaps, meta,
-                                          self.grid_size, grid_centers, self.cube_size)
+                                          self.grid_size, grid_centers, self.cube_size) # 设置grid center位置，确定网格对应的中心点坐标
+
 
         index = grid_centers[:, 3] >= 0
         valid_cubes = self.v2v_net(cubes[index])
-        pred[index] = self.soft_argmax_layer(valid_cubes, grids[index])
+
+        pred[index] = self.soft_argmax_layer(valid_cubes, grids[index]) #
 
         return pred

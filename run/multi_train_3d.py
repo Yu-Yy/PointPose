@@ -31,14 +31,15 @@ from utils.utils import load_backbone_panoptic
 import dataset
 import models
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description='Train keypoints network')
     parser.add_argument(
         '--cfg', help='experiment configure file name', required=True, type=str)
 
     args, rest = parser.parse_known_args()
-    update_config(args.cfg) # 把config的文件更新过去
- 
+    update_config(args.cfg)
+
     return args
 
 

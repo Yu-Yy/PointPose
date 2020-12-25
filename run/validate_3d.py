@@ -47,7 +47,6 @@ def main():
     args = parse_args()
     logger, final_output_dir, tb_log_dir = create_logger(
         config, args.cfg, 'validate')
-
     logger.info(pprint.pformat(args))
     logger.info(pprint.pformat(config))
 

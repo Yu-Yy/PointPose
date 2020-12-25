@@ -40,7 +40,7 @@ coco_joints_def = {0: 'nose',
 LIMBS = [[0, 1], [0, 2], [1, 2], [1, 3], [2, 4], [3, 5], [4, 6], [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [11, 13], [13, 15],
         [6, 12], [12, 14], [14, 16], [5, 6], [11, 12]]
 
-
+ 
 class ShelfSynthetic(Dataset):
     def __init__(self, cfg, image_set, is_train, transform=None):
         super().__init__()
@@ -56,7 +56,8 @@ class ShelfSynthetic(Dataset):
 
         this_dir = os.path.dirname(__file__)
         dataset_root = os.path.join(this_dir, '../..', cfg.DATASET.ROOT)
-        self.dataset_root = dataset_root
+        #self.dataset_root = dataset_root
+        self.dataset_root = "/Extra/panzhiyu/Shelf/"
         self.image_set = image_set
         self.dataset_name = cfg.DATASET.TEST_DATASET
 
@@ -78,7 +79,8 @@ class ShelfSynthetic(Dataset):
         self.space_center = np.array(cfg.MULTI_PERSON.SPACE_CENTER)
         self.initial_cube_size = np.array(cfg.MULTI_PERSON.INITIAL_CUBE_SIZE)
 
-        pose_db_file = os.path.join(self.dataset_root, "..", "panoptic_training_pose.pkl")
+        #pose_db_file = os.path.join(self.dataset_root, "..", "panoptic_training_pose.pkl") #pose 结果的直接读入
+        pose_db_file = "/home/panzhiyu/project/3d_pose/voxelpose-pytorch/data/panoptic_training_pose.pkl"
         self.pose_db = pickle.load(open(pose_db_file, "rb"))
         self.cameras = self._get_cam()
 
@@ -95,7 +97,7 @@ class ShelfSynthetic(Dataset):
 
     def __getitem__(self, idx):
         # nposes = np.random.choice([1, 2, 3, 4, 5], p=[0.1, 0.1, 0.2, 0.4, 0.2])
-        nposes = np.random.choice(range(1, 6))
+        nposes = np.random.choice(range(1, 6)) # 随机选择出现这一帧的人数
         bbox_list = []
         center_list = []
 
@@ -103,13 +105,13 @@ class ShelfSynthetic(Dataset):
         joints_3d = np.array([p['pose'] for p in select_poses])
         joints_3d_vis = np.array([p['vis'] for p in select_poses])
 
-        for n in range(0, nposes):
+        for n in range(0, nposes): # 随机选择
             points = joints_3d[n][:, :2].copy()
             center = (points[11, :2] + points[12, :2]) / 2
             rot_rad = np.random.uniform(-180, 180)
 
             new_center = self.get_new_center(center_list)
-            new_xy = rotate_points(points, center, rot_rad) - center + new_center
+            new_xy = rotate_points(points, center, rot_rad) - center + new_center #随机放置xy 平面
 
             loop_count = 0
             while not self.isvalid(self.calc_bbox(new_xy, joints_3d_vis[n]), bbox_list):
@@ -129,7 +131,7 @@ class ShelfSynthetic(Dataset):
                 joints_3d[n][:, :2] = new_xy
 
         input, target_heatmap, target_weight, target_3d, meta, input_heatmap = [], [], [], [], [], []
-        for k, cam in self.cameras.items():
+        for k, cam in self.cameras.items(): #使用当前的参数
             i, th, tw, t3, m, ih = self._get_single_view_item(joints_3d, joints_3d_vis, cam)
             input.append(i)
             target_heatmap.append(th)

@@ -2,56 +2,67 @@ CUDNN:
   BENCHMARK: true
   DETERMINISTIC: false
   ENABLED: true
-BACKBONE_MODEL: '' # orig: ''
+BACKBONE_MODEL: '' #'pose_resnet'
 MODEL: 'multi_person_posenet'
 DATA_DIR: ''
-GPUS: '0'
-OUTPUT_DIR: 'output'
+GPUS: '0,1'
+OUTPUT_DIR: 'output_new'
 LOG_DIR: 'log'
 WORKERS: 4
 PRINT_FREQ: 100
 
 DATASET:
   COLOR_RGB: True
-  TRAIN_DATASET: 'shelf_synthetic'
-  TEST_DATASET: 'shelf'
+  TRAIN_DATASET: 'panoptic'
+  TEST_DATASET: 'panoptic'
   DATA_FORMAT: jpg
   DATA_AUGMENTATION: False
   FLIP: False
-  ROOT: 'data/Shelf' # 'data/panoptic/'
+  ROOT: 'data/panoptic-toolbox/data/' # 'data/panoptic/'
   ROT_FACTOR: 45
   SCALE_FACTOR: 0.35
   TEST_SUBSET: 'validation'
   TRAIN_SUBSET: 'train'
-  ROOTIDX:
-    - 2
-    - 3
-  CAMERA_NUM: 5
+  ROOTIDX: 2
+  CAMERA_NUM: 5 #5
 NETWORK:
-  PRETRAINED_BACKBONE: ''
+  PRETRAINED_BACKBONE: '' #"models/pose_resnet50_panoptic.pth.tar"
   PRETRAINED:  ''  # 'models/pytorch/imagenet/resnet50-19c8e357.pth'
   TARGET_TYPE: gaussian
   IMAGE_SIZE:
-  - 800
-  - 608
+  - 960
+  - 512
   HEATMAP_SIZE:
-  - 200
-  - 152
+  - 240
+  - 128
   SIGMA: 3
-  NUM_JOINTS: 17 # for testing # orig: 17
+  NUM_JOINTS: 15
   USE_GT: False
+POSE_RESNET:
+  FINAL_CONV_KERNEL: 1
+  DECONV_WITH_BIAS: False
+  NUM_DECONV_LAYERS: 3
+  NUM_DECONV_FILTERS:
+  - 256
+  - 256
+  - 256
+  NUM_DECONV_KERNELS:
+  - 4
+  - 4
+  - 4
+  NUM_LAYERS: 50
 LOSS:
   USE_TARGET_WEIGHT: true
 TRAIN:
-  BATCH_SIZE: 1
-  SHUFFLE: true
+  BATCH_SIZE: 4 # changed to 4
+  SHUFFLE: true   
   BEGIN_EPOCH: 0
-  END_EPOCH: 30
+  END_EPOCH: 10
   RESUME: true
   OPTIMIZER: adam
-  LR: 0.0001
+  LR: 0.00001
 TEST:
-  MODEL_FILE: "model_best.pth.tar"
+  MODEL_FILE: 'model_best.pth.tar'
   BATCH_SIZE: 4
 DEBUG:
   DEBUG: true
@@ -61,17 +72,17 @@ MULTI_PERSON:
   SPACE_SIZE:
     - 8000.0
     - 8000.0
-    - 2000.0
+    - 2000.0  # mm
   SPACE_CENTER:
-    - 450.0 # 120.0
-    - -320.0 # -600.0
+    - 0.0 # 120.0
+    - -500.0 # -600.0
     - 800.0
   INITIAL_CUBE_SIZE:
     - 80
     - 80
     - 20
   MAX_PEOPLE_NUM: 10
-  THRESHOLD: 0.1
+  THRESHOLD: 0.3
 PICT_STRUCT:
   GRID_SIZE:
     - 2000.0

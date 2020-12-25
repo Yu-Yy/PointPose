@@ -113,7 +113,7 @@ class EncoderDecorder(nn.Module):
 class V2VNet(nn.Module):
     def __init__(self, input_channels, output_channels):
         super(V2VNet, self).__init__()
-
+        # input channel is the # of joints ouput_channel is 1
         self.front_layers = nn.Sequential(
             Basic3DBlock(input_channels, 16, 7),
             Res3DBlock(16, 32),

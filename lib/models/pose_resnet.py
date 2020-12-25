@@ -12,6 +12,7 @@ import logging
 
 import torch
 import torch.nn as nn
+import copy
 
 
 BN_MOMENTUM = 0.1
@@ -99,14 +100,14 @@ class Bottleneck(nn.Module):
 
 class PoseResNet(nn.Module):
 
-    def __init__(self, block, layers, cfg, **kwargs):
+    def __init__(self, block, layers, cfg, **kwargs): # bottleneck [3 4 6 3]
         self.inplanes = 64
-        self.deconv_with_bias = cfg.POSE_RESNET.DECONV_WITH_BIAS
+        self.deconv_with_bias = cfg.POSE_RESNET.DECONV_WITH_BIAS # false
 
         super(PoseResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
-                               bias=False)
-        self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM)
+                               bias=False) # 这是对2D 图片处理吧
+        self.bn1 = nn.BatchNorm2d(64, momentum=BN_MOMENTUM) # BN 层的动量
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
@@ -122,14 +123,14 @@ class PoseResNet(nn.Module):
         )
 
         self.final_layer = nn.Conv2d(
-            in_channels=cfg.POSE_RESNET.NUM_DECONV_FILTERS[-1],
-            out_channels=cfg.NETWORK.NUM_JOINTS,
+            in_channels=cfg.POSE_RESNET.NUM_DECONV_FILTERS[-1], #256 channels
+            out_channels=cfg.NETWORK.NUM_JOINTS, # 输出joints
             kernel_size=cfg.POSE_RESNET.FINAL_CONV_KERNEL,
             stride=1,
             padding=1 if cfg.POSE_RESNET.FINAL_CONV_KERNEL == 3 else 0
         )
 
-    def _make_layer(self, block, planes, blocks, stride=1):
+    def _make_layer(self, block, planes, blocks, stride=1): # 入出一致 保持 planes channel
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
@@ -139,7 +140,7 @@ class PoseResNet(nn.Module):
             )
 
         layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
+        layers.append(block(self.inplanes, planes, stride, downsample)) # 一个基本的bottle neck 结构
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
             layers.append(block(self.inplanes, planes))
@@ -172,7 +173,7 @@ class PoseResNet(nn.Module):
 
             planes = num_filters[i]
             layers.append(
-                nn.ConvTranspose2d(
+                nn.ConvTranspose2d( # 反卷积
                     in_channels=self.inplanes,
                     out_channels=planes,
                     kernel_size=kernel,
@@ -198,9 +199,11 @@ class PoseResNet(nn.Module):
         x = self.layer4(x)
 
         x = self.deconv_layers(x)
-        x = self.final_layer(x)
+        # extract this feature
+        feature_output = copy.deepcopy(x)
+        heatmap_output = self.final_layer(x) # 停在heatmap 层面
 
-        return x
+        return heatmap_output, feature_output
 
     def init_weights(self, pretrained=''):
         this_dir = os.path.dirname(__file__)
@@ -254,19 +257,19 @@ class PoseResNet(nn.Module):
 
 resnet_spec = {18: (BasicBlock, [2, 2, 2, 2]),
                34: (BasicBlock, [3, 4, 6, 3]),
-               50: (Bottleneck, [3, 4, 6, 3]),
+               50: (Bottleneck, [3, 4, 6, 3]), # 选用 resnet-50
                101: (Bottleneck, [3, 4, 23, 3]),
                152: (Bottleneck, [3, 8, 36, 3])}
 
 
 def get_pose_net(cfg, is_train, **kwargs):
-    num_layers = cfg.POSE_RESNET.NUM_LAYERS
+    num_layers = cfg.POSE_RESNET.NUM_LAYERS # 50
 
     block_class, layers = resnet_spec[num_layers]
 
-    model = PoseResNet(block_class, layers, cfg, **kwargs)
+    model = PoseResNet(block_class, layers, cfg, **kwargs) # 这个backbone 处理 2D 图片输入？
 
     if is_train:
-        model.init_weights(cfg.NETWORK.PRETRAINED)
+        model.init_weights(cfg.NETWORK.PRETRAINED) # 给的是空，跟前端的重复
 
     return model
