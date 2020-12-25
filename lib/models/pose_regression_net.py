@@ -43,11 +43,11 @@ class PoseRegressionNet(nn.Module):
         # name_list = ['feat1','feat2']
         # self.project_layer = RoISampleLayer(cfg,name_list)
 
+        if cfg.NETWORK.FEATURE:
+            self.v2v_net = V2VNet(cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0], cfg.NETWORK.NUM_JOINTS)
+        else:
+            self.v2v_net = V2VNet(cfg.NETWORK.NUM_JOINTS, cfg.NETWORK.NUM_JOINTS) # output is the number of the joints
 
-        self.v2v_net = V2VNet(cfg.NETWORK.NUM_JOINTS, cfg.NETWORK.NUM_JOINTS) # output is the number of the joints
-
-        # self.v2v_net = V2VNet(cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0], cfg.NETWORK.NUM_JOINTS)
-        
         self.soft_argmax_layer = SoftArgmaxLayer(cfg)
 
     def forward(self, all_heatmaps, meta, grid_centers):

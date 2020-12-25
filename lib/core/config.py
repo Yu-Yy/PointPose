@@ -70,6 +70,7 @@ config.CUDNN.ENABLED = True
 
 # common params for NETWORK
 config.NETWORK = edict()
+config.NETWORK.FEATURE = True
 config.NETWORK.PRETRAINED = 'models/pytorch/imagenet/resnet50-19c8e357.pth'
 config.NETWORK.PRETRAINED_BACKBONE = ''
 config.NETWORK.NUM_JOINTS = 20

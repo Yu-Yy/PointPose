@@ -5,8 +5,8 @@ CUDNN:
 BACKBONE_MODEL: 'pose_higher_hrnet' #'pose_resnet' 
 MODEL: 'multi_person_posenet'
 DATA_DIR: ''
-GPUS: '0'
-OUTPUT_DIR: 'output_hrnet_cmu_F3'  # F3 correct the projection bug # F2 is the last bug with clamp # H2 is the heatmap with the correct size
+GPUS: '0,1'
+OUTPUT_DIR: 'output_hrnet_cmu_F4'  #F4 is another trial # F3 correct the projection bug # F2 is the last bug with clamp # H2 is the heatmap with the correct size
 LOG_DIR: 'log'
 WORKERS: 12 
 PRINT_FREQ: 100
@@ -31,6 +31,7 @@ DATASET:
     - 1920
     - 1080
 NETWORK: # for the 
+  FEATURE: True 
   PRETRAINED_BACKBONE: 'models/pose_higher_hrnet_w32_512.pth' #'models/pose_resnet50_panoptic.pth.tar' # change this 
   PRETRAINED:  ''  # 'models/pytorch/imagenet/resnet50-19c8e357.pth'
   TARGET_TYPE: gaussian

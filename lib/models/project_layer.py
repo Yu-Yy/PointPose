@@ -6,7 +6,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import numpy as np
 import utils.cameras as cameras
 from utils.transforms import get_affine_transform as get_transform
 from utils.transforms import affine_transform_pts_cuda as do_transform
@@ -15,10 +15,11 @@ from utils.transforms import affine_transform_pts_cuda as do_transform
 class ProjectLayer(nn.Module):
     def __init__(self, cfg):
         super(ProjectLayer, self).__init__()
-
+        self.feature_op = cfg.NETWORK.FEATURE
         self.img_size = cfg.NETWORK.IMAGE_SIZE  # 输入图片的大小
         # self.heatmap_size = cfg.NETWORK.HEATMAP_SIZE # 
-        self.heatmap_size = [cfg.NETWORK.IMAGE_SIZE[0] / 2, cfg.NETWORK.IMAGE_SIZE[1] / 2]
+        
+        self.heatmap_size = np.array([cfg.NETWORK.IMAGE_SIZE[0]/2,cfg.NETWORK.IMAGE_SIZE[1]/2],dtype=np.int16) #[cfg.NETWORK.IMAGE_SIZE[0] / 2, cfg.NETWORK.IMAGE_SIZE[1] / 2] 
         # only these different
 
         self.grid_size = cfg.MULTI_PERSON.SPACE_SIZE
@@ -98,7 +99,8 @@ class ProjectLayer(nn.Module):
         # cubes = cubes.mean(dim=-1)
         cubes = torch.sum(torch.mul(cubes, bounding), dim=-1) / (torch.sum(bounding, dim=-1) + 1e-6) # mul为点乘
         cubes[cubes != cubes] = 0.0
-        cubes = cubes.clamp(0.0, 1.0)  # cubes 的处理 可之后再考虑 # for heatmap process recover this
+        if not self.feature_op:
+            cubes = cubes.clamp(0.0, 1.0)  # cubes 的处理 可之后再考虑 # for heatmap process recover this
 
         cubes = cubes.view(batch_size, channel_num, cube_size[0], cube_size[1], cube_size[2])  ## 采样每个视角的2D 结果
         return cubes, grids

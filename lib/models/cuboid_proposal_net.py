@@ -99,10 +99,12 @@ class CuboidProposalNet(nn.Module):
         self.project_layer = ProjectLayer(cfg)
         # name_list = ['feat1','feat2']
         # self.project_layer = RoISampleLayer(cfg,name_list)
-        self.v2v_net = V2VNet(cfg.NETWORK.NUM_JOINTS, 1)
 
-        # self.v2v_net = V2VNet(cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0], 1)
-        
+        if cfg.NETWORK.FEATURE:
+            self.v2v_net = V2VNet(cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0], 1)
+        else:
+            self.v2v_net = V2VNet(cfg.NETWORK.NUM_JOINTS, 1)
+      
         self.proposal_layer = ProposalLayer(cfg)
 
     def forward(self, all_features, meta):

@@ -22,6 +22,7 @@ from core.loss import PerJointL1Loss
 class MultiPersonPoseNet(nn.Module):
     def __init__(self, backbone, cfg):
         super(MultiPersonPoseNet, self).__init__()
+        self.feature_op = cfg.NETWORK.FEATURE
         self.num_cand = cfg.MULTI_PERSON.MAX_PEOPLE_NUM # 10
         self.num_joints = cfg.NETWORK.NUM_JOINTS
 
@@ -71,8 +72,10 @@ class MultiPersonPoseNet(nn.Module):
                 grid_centers[i, :num_person[i], 3] = torch.tensor(range(num_person[i]), device=device)
                 grid_centers[i, :num_person[i], 4] = 1.0
         else:
-            root_cubes, grid_centers = self.root_net(all_heatmaps, meta) # root 位置定位 grid 确定定位，root算loss, meta's camera
-            # root_cubes, grid_centers = self.root_net(all_features, meta)
+            if self.feature_op:
+                root_cubes, grid_centers = self.root_net(all_features, meta)
+            else:
+                root_cubes, grid_centers = self.root_net(all_heatmaps, meta) # root 位置定位 grid 确定定位，root算loss, meta's camera
             # root_cubes return the whole 3d cubes likelihood 
             # calculate 3D heatmap loss 
             if targets_3d is not None:
@@ -89,8 +92,11 @@ class MultiPersonPoseNet(nn.Module):
         for n in range(self.num_cand):
             index = (pred[:, n, 0, 3] >= 0)
             if torch.sum(index) > 0:
-                single_pose = self.pose_net(all_heatmaps, meta, grid_centers[:, n])
-                # single_pose = self.pose_net(all_features, meta, grid_centers[:, n])
+                if self.feature_op:
+                    single_pose = self.pose_net(all_features, meta, grid_centers[:, n])
+                else:
+                    single_pose = self.pose_net(all_heatmaps, meta, grid_centers[:, n])
+                    
                 pred[:, n, :, 0:3] = single_pose.detach() # 并不是所有都应该有效的？
 
                 # calculate 3D pose loss
