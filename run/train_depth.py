@@ -20,17 +20,41 @@ import os
 import pprint
 import logging
 import json
+from torch.utils.data.dataloader import default_collate
+import sys
 
+class Logger(object):
+    def __init__(self, filename='default.log', stream=sys.stdout):
+	    self.terminal = stream
+	    self.log = open(filename, 'a')
+
+    def write(self, message):
+	    self.terminal.write(message)
+	    self.log.write(message)
+
+    def flush(self):
+	    pass
 
 import _init_paths
-from core.config import config
-from core.config import update_config
-from core.function import train_3d, validate_3d
+from depth_core.config import config
+from depth_core.config import update_config
+from depth_core.function import train_depth, validate_depth
 from utils.utils import create_logger
-from utils.utils import save_checkpoint, load_checkpoint, load_model_state
+from utils.utils import save_checkpoint, load_checkpoint_depth, load_model_state
 from utils.utils import load_backbone_panoptic
-import dataset
+import dataset  # a new depth dataset
 import models
+
+from dataset.panoptic_depth import Panoptic_Depth # 暂用
+
+def ommit_collate_fn(batch):
+    # import pdb; pdb.set_trace()
+    # 过滤为None的数据
+    batch = list(filter(lambda x:x[0] is not None, batch))
+    if len(batch) == 0: return torch.Tensor()
+    return default_collate(batch)
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Train keypoints network')
@@ -45,14 +69,14 @@ def parse_args():
 
 def get_optimizer(model):
     lr = config.TRAIN.LR
-    if model.module.backbone is not None:
-        for params in model.module.backbone.parameters():
-            params.requires_grad = False   # If you want to train the whole model jointly, set it to be True.
-    for params in model.module.root_net.parameters():
-        params.requires_grad = True
-    for params in model.module.pose_net.parameters():
-        params.requires_grad = True
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.module.parameters()), lr=lr)
+    # if model.module.backbone is not None:
+    #     for params in model.module.backbone.parameters():
+    #         params.requires_grad = False   # If you want to train the whole model jointly, set it to be True.
+    # for params in model.module.root_net.parameters():
+    #     params.requires_grad = True
+    # for params in model.module.pose_net.parameters():
+    #     params.requires_grad = True
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.module.parameters()), lr=lr) # 整体模型权重均全部重新训练
     # optimizer = optim.Adam(model.module.parameters(), lr=lr)
 
     return model, optimizer
@@ -71,31 +95,32 @@ def main():
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # RGB image processing
     train_dataset = eval('dataset.' + config.DATASET.TRAIN_DATASET)(
-        config, config.DATASET.TRAIN_SUBSET, True,
+        config.DATASET.ROOT,config.DATASET.TRAIN_VIEW_SET ,True,
         transforms.Compose([
             transforms.ToTensor(),
             normalize,
         ]))
-
+    # import pdb; pdb.set_trace()
     train_loader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=config.TRAIN.BATCH_SIZE * len(gpus),
         shuffle=config.TRAIN.SHUFFLE,
         num_workers=config.WORKERS,
+        collate_fn = ommit_collate_fn,
         pin_memory=True)
 
     test_dataset = eval('dataset.' + config.DATASET.TEST_DATASET)(
-        config, config.DATASET.TEST_SUBSET, False,
+        config.DATASET.ROOT,config.DATASET.TEST_VIEW_SET, False,
         transforms.Compose([
             transforms.ToTensor(),
             normalize,
         ]))
-
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=config.TEST.BATCH_SIZE * len(gpus),
         shuffle=False,
         num_workers=config.WORKERS,
+        collate_fn = ommit_collate_fn,
         pin_memory=True)
 
     cudnn.benchmark = config.CUDNN.BENCHMARK
@@ -103,21 +128,23 @@ def main():
     torch.backends.cudnn.enabled = config.CUDNN.ENABLED
 
     print('=> Constructing models ..')
-    model = eval('models.' + config.MODEL + '.get_multi_person_pose_net')(
-        config, is_train=True) # create the model
+    model = eval('models.' + config.MODEL + '.build')( # hrnet_adabins.build
+        config, config.BINS, is_train=True) # create the model
     with torch.no_grad():
         model = torch.nn.DataParallel(model, device_ids=gpus).cuda() # 数据输送方式
 
-    model, optimizer = get_optimizer(model)
+    model, optimizer = get_optimizer(model) # TODO: all the parameters needs to be changed
 
     start_epoch = config.TRAIN.BEGIN_EPOCH
     end_epoch = config.TRAIN.END_EPOCH
-
-    best_precision = 0
+    metrics_load = dict()
+    best_abs_rel = 100 #TODO: load the corresponding metric using a1
     if config.NETWORK.PRETRAINED_BACKBONE:
-        model = load_backbone_panoptic(model, config.NETWORK.PRETRAINED_BACKBONE) # load backbone
+        model = load_backbone_panoptic(model, config.NETWORK.PRETRAINED_BACKBONE) # load backbone # not change
     if config.TRAIN.RESUME:
-        start_epoch, model, optimizer, best_precision = load_checkpoint(model, optimizer, final_output_dir)
+        start_epoch, model, optimizer, metrics_load = load_checkpoint_depth(model, optimizer, final_output_dir) # TODO: Load the A1 metrics
+
+    best_abs_rel = metrics_load['abs_rel']
 
     writer_dict = {
         'writer': SummaryWriter(log_dir=tb_log_dir),
@@ -126,15 +153,23 @@ def main():
     }
 
     print('=> Training...')
+    
+    # generating the log
+    
+
+    sys.stdout = Logger(stream = sys.stdout)
     for epoch in range(start_epoch, end_epoch):
         print('Epoch: {}'.format(epoch))
 
         # lr_scheduler.step()
-        train_3d(config, model, optimizer, train_loader, epoch, final_output_dir, writer_dict)
-        precision = validate_3d(config, model, test_loader, final_output_dir)
+        train_depth(config, model, optimizer, train_loader, epoch, final_output_dir, writer_dict)
+        metrics, _ = validate_depth(config, model, test_loader, final_output_dir,epoch)
+         
 
-        if precision > best_precision:
-            best_precision = precision
+        # get the a1
+        abs_rel = metrics['abs_rel']
+        if abs_rel < best_abs_rel:
+            best_abs_rel = abs_rel
             best_model = True
         else:
             best_model = False
@@ -143,7 +178,7 @@ def main():
         save_checkpoint({
             'epoch': epoch + 1,
             'state_dict': model.module.state_dict(),
-            'precision': best_precision,
+            'metrics': metrics,
             'optimizer': optimizer.state_dict(),
         }, best_model, final_output_dir)
 

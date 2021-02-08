@@ -43,6 +43,8 @@ class MultiPersonPoseNet(nn.Module):
                 heatmaps, features = self.backbone(view)
                 # dicter['feat1'] = features[0]
                 # dicter['feat2'] = features[1] # multi-scale feature input
+                # print(heatmaps.shape) # [batch * numj* half reso]
+                # print(features[1].shape) # [batch * 32 * half reso]
                 all_heatmaps.append(heatmaps) # 用all heatmap处理 batch_size * num_joints * h * w
                 all_features.append(features[1])
         else: # not used

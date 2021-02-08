@@ -13,4 +13,4 @@ import models.project_layer
 import models.cuboid_proposal_net
 import models.pose_regression_net
 import models.multi_person_posenet
-
+from .hrnet_adabins import HrnetAdaptiveBins as hrnet_adabins
