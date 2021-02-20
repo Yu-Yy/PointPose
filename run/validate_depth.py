@@ -26,19 +26,20 @@ from torch.utils.data.dataloader import default_collate
 import _init_paths
 from depth_core.config import config
 from depth_core.config import update_config
-from depth_core.function import train_depth, validate_depth
+from depth_core.function import train_depth, validate_depth, validate_depth_vis
 from utils.utils import create_logger
 from utils.utils import save_checkpoint, load_checkpoint_depth, load_model_state
 from utils.utils import load_backbone_panoptic
 import dataset  # a new depth dataset
 import models
 
-from dataset.panoptic_depth import Panoptic_Depth # 暂用
+from dataset.panoptic_depth_multview import Panoptic_Depth # 暂用
 
 def ommit_collate_fn(batch):
     # import pdb; pdb.set_trace()
-    # 过滤为None的数据
-    batch = list(filter(lambda x:x[0] is not None, batch))
+    # 过滤为None的数据 不可有None
+    # batch = list(filter(lambda x:x[0] is not None, batch))
+    batch = list(filter(lambda x: None not in x, batch))
     if len(batch) == 0: return torch.Tensor()
     return default_collate(batch)
 
@@ -69,8 +70,8 @@ def main():
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # RGB image processing
 
-    test_dataset = eval('dataset.' + config.DATASET.TEST_DATASET)(
-        config.DATASET.ROOT,config.DATASET.VIEW_SET, False,
+    test_dataset = Panoptic_Depth(config,
+        config.DATASET.ROOT, config.DATASET.KP_ROOT, config.DATASET.TEST_VIEW_SET, False,
         transforms.Compose([
             transforms.ToTensor(),
             normalize,
@@ -78,7 +79,7 @@ def main():
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=config.TEST.BATCH_SIZE * len(gpus),
-        shuffle=False,
+        shuffle=True, # add the random property
         num_workers=config.WORKERS,
         collate_fn = ommit_collate_fn,
         pin_memory=True)
@@ -89,18 +90,25 @@ def main():
 
     print('=> Constructing models ..')
     model = eval('models.' + config.MODEL + '.build')( # hrnet_adabins.build
-        config, config.BINS, is_train=True) # create the model
+        config, is_train=False) # create the model # create the model
     with torch.no_grad():
         model = torch.nn.DataParallel(model, device_ids=gpus).cuda() # 数据输送方式
 
     test_model_file = os.path.join(final_output_dir, config.TEST.MODEL_FILE)
-    if config.TEST.MODEL_FILE and os.path.isfile(test_model_file):
-        logger.info('=> load models state {}'.format(test_model_file))
-        model.module.load_state_dict(torch.load(test_model_file))
-    else:
-        raise ValueError('Check the model file for testing!')
 
-    validate_depth(config, model, test_loader, final_output_dir, vali=True)
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.module.parameters()), lr=1e-3)
+    if config.TRAIN.RESUME:
+        start_epoch, model, optimizer, metrics_load = load_checkpoint_depth(model, optimizer, final_output_dir)
+
+    # TODO: temporally noting
+    # if config.TEST.MODEL_FILE and os.path.isfile(test_model_file):
+    #     logger.info('=> load models state {}'.format(test_model_file))
+    #     model.module.load_state_dict(torch.load(test_model_file))
+    # else:
+    #     raise ValueError('Check the model file for testing!')
+
+    # validate_depth(config, model, test_loader, final_output_dir, vali=True)
+    validate_depth_vis(config, model, test_loader, final_output_dir, vali=True)
 
 
 if __name__ == '__main__':

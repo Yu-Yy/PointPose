@@ -41,7 +41,7 @@ def train_3d(config, model, optimizer, loader, epoch, output_dir, writer_dict, d
         data_time.update(time.time() - end)
 
         if 'panoptic' in config.DATASET.TEST_DATASET:
-            pred, heatmaps, grid_centers, loss_2d, loss_3d, loss_cord = model(views= inputs, meta=meta, # inputs
+            pred, heatmaps, grid_centers, loss_2d, loss_3d, loss_cord = model(views = inputs, meta=meta, # inputs
                                                                               targets_2d=targets_2d,
                                                                               weights_2d=weights_2d,
                                                                               targets_3d=targets_3d[0], input_heatmaps=input_heatmap)

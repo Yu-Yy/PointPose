@@ -49,8 +49,9 @@ from dataset.panoptic_depth import Panoptic_Depth # 暂用
 
 def ommit_collate_fn(batch):
     # import pdb; pdb.set_trace()
-    # 过滤为None的数据
-    batch = list(filter(lambda x:x[0] is not None, batch))
+    # 过滤为None的数据 不可有None
+    # batch = list(filter(lambda x:x[0] is not None, batch))
+    batch = list(filter(lambda x: None not in x, batch))
     if len(batch) == 0: return torch.Tensor()
     return default_collate(batch)
 
@@ -94,8 +95,8 @@ def main():
     print('=> Loading data ..')
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # RGB image processing
-    train_dataset = eval('dataset.' + config.DATASET.TRAIN_DATASET)(
-        config.DATASET.ROOT,config.DATASET.TRAIN_VIEW_SET ,True,
+    train_dataset = eval('dataset.' + config.DATASET.TRAIN_DATASET)(config,
+        config.DATASET.ROOT,config.DATASET.KP_ROOT, config.DATASET.TRAIN_VIEW_SET ,True,
         transforms.Compose([
             transforms.ToTensor(),
             normalize,
@@ -109,8 +110,8 @@ def main():
         collate_fn = ommit_collate_fn,
         pin_memory=True)
 
-    test_dataset = eval('dataset.' + config.DATASET.TEST_DATASET)(
-        config.DATASET.ROOT,config.DATASET.TEST_VIEW_SET, False,
+    test_dataset = eval('dataset.' + config.DATASET.TEST_DATASET)(config,
+        config.DATASET.ROOT, config.DATASET.KP_ROOT, config.DATASET.TEST_VIEW_SET, False,
         transforms.Compose([
             transforms.ToTensor(),
             normalize,
@@ -118,7 +119,7 @@ def main():
     test_loader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=config.TEST.BATCH_SIZE * len(gpus),
-        shuffle=False,
+        shuffle=True,
         num_workers=config.WORKERS,
         collate_fn = ommit_collate_fn,
         pin_memory=True)
@@ -129,7 +130,7 @@ def main():
 
     print('=> Constructing models ..')
     model = eval('models.' + config.MODEL + '.build')( # hrnet_adabins.build
-        config, config.BINS, is_train=True) # create the model
+        config, is_train=True) # create the model
     with torch.no_grad():
         model = torch.nn.DataParallel(model, device_ids=gpus).cuda() # 数据输送方式
 
@@ -138,13 +139,14 @@ def main():
     start_epoch = config.TRAIN.BEGIN_EPOCH
     end_epoch = config.TRAIN.END_EPOCH
     metrics_load = dict()
-    best_abs_rel = 100 #TODO: load the corresponding metric using a1
-    if config.NETWORK.PRETRAINED_BACKBONE:
-        model = load_backbone_panoptic(model, config.NETWORK.PRETRAINED_BACKBONE) # load backbone # not change
+    best_abs_rel = 100     # TODO: load the corresponding metric using a1
+    # no pretrained model loaded # not using pretrained model
+    # if config.NETWORK.PRETRAINED_BACKBONE: # no pretrained test   
+    #     model = load_backbone_panoptic(model, config.NETWORK.PRETRAINED_BACKBONE) # load backbone # not change
     if config.TRAIN.RESUME:
         start_epoch, model, optimizer, metrics_load = load_checkpoint_depth(model, optimizer, final_output_dir) # TODO: Load the A1 metrics
-
-    best_abs_rel = metrics_load['abs_rel']
+        best_abs_rel = metrics_load['abs_rel']
+    
 
     writer_dict = {
         'writer': SummaryWriter(log_dir=tb_log_dir),
@@ -157,16 +159,22 @@ def main():
     # generating the log
     
 
-    sys.stdout = Logger(stream = sys.stdout)
+    # sys.stdout = Logger(stream = sys.stdout)
     for epoch in range(start_epoch, end_epoch):
         print('Epoch: {}'.format(epoch))
-
         # lr_scheduler.step()
+        
         train_depth(config, model, optimizer, train_loader, epoch, final_output_dir, writer_dict)
-        metrics, _ = validate_depth(config, model, test_loader, final_output_dir,epoch)
-         
+        if epoch == 0:
+            init_model_name =os.path.join(final_output_dir,
+                                          'init_state.pth.tar')
+            logger.info('saving init model state to {}'.format(
+                init_model_name))
+            torch.save(model.module.state_dict(), init_model_name)
+        metrics = validate_depth(config, model, test_loader, final_output_dir,epoch)
+        
 
-        # get the a1
+        # get the abs_rel
         abs_rel = metrics['abs_rel']
         if abs_rel < best_abs_rel:
             best_abs_rel = abs_rel
