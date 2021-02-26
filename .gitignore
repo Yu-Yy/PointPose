@@ -135,6 +135,6 @@ models
 log 
 data
 test*
-depth*
 debug*
 points*
+trash/
