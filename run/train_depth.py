@@ -165,12 +165,12 @@ def main():
         # lr_scheduler.step()
         
         train_depth(config, model, optimizer, train_loader, epoch, final_output_dir, writer_dict)
-        if epoch == 0:
-            init_model_name =os.path.join(final_output_dir,
-                                          'init_state.pth.tar')
-            logger.info('saving init model state to {}'.format(
-                init_model_name))
-            torch.save(model.module.state_dict(), init_model_name)
+        if epoch % 2 ==  0:
+            model_name =os.path.join(final_output_dir,
+                                          f'epoch{epoch}_state.pth.tar')
+            logger.info('saving current model state to {}'.format(
+                model_name))
+            torch.save(model.module.state_dict(), model_name)
         metrics = validate_depth(config, model, test_loader, final_output_dir,epoch)
         
 
