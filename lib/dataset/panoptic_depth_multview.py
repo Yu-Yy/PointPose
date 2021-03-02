@@ -46,6 +46,7 @@ class Panoptic_Depth(Dataset):
         self.image_size = np.array([1920,1080])
         # self.input_size = cfg.dataset.input_size 
         self.input_size = np.array([960,512])
+        self.crop_size = np.array([680,512])
         self.heatmap_size = self.input_size / 2
         self.heatmap_size = self.heatmap_size.astype(np.int16)
         self.num_joints = cfg.NETWORK.NUM_JOINTS
@@ -242,9 +243,12 @@ class Panoptic_Depth(Dataset):
                 mask_gt = mask_gt[:,141:821]
                 t_mask = transforms.ToTensor()
                 mask_gt = t_mask(mask_gt)
+                # import pdb; pdb.set_trace()
                 output_valid_mask.append(mask_gt.unsqueeze(0))
             except:
-                output_valid_mask.append(torch.zeros(1,int(self.input_size[1]),int(self.input_size[0])))
+                # import pdb; pdb.set_trace()
+                #output_valid_mask.append(torch.ones(1,int(self.crop_size[1]),int(self.crop_size[0]))) # all one for mask
+                return None, None, None, None, None, None, None, None, None # 舍弃问题mask
 
             # process the heatmap
             joints = []

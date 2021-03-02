@@ -10,9 +10,10 @@ import pickle
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 from torch.nn.functional import interpolate
-from depth_core.loss import SILogLoss, BinsChamferLoss, PerJointMSELoss, CrossEntropyMaskLoss, SILogLoss_grad
+from depth_core.loss import SILogLoss, BinsChamferLoss, PerJointMSELoss, CrossEntropyMaskLoss, SILogLoss_grad, foreground_depth_loss
 from depth_core.utils_depth import RunningAverage, compute_errors, RunningAverageDict
 
 
@@ -31,6 +32,7 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
     losses_depth = AverageMeter()
     losses_hm = AverageMeter()
     losses_mask = AverageMeter()
+    losses_fore_depth = AverageMeter()
     
     criterion_hm = PerJointMSELoss().cuda()
     criterion_dense = SILogLoss().cuda()
@@ -38,6 +40,7 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
     criterion_chamfer = BinsChamferLoss().cuda()
     criterion_mask = CrossEntropyMaskLoss().cuda()
     criterion_grad = SILogLoss_grad().cuda()
+    criterion_fore_depth = foreground_depth_loss().cuda()
 
     model.train()
 
@@ -60,12 +63,18 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
         depth_mask = depth > config.DATASET.MIN_DEPTH
         attention_mask = depth_mask * mask_gt
         l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True)
-        # import pdb; pdb.set_trace()
+        # add one heatmap mask to pay more attention to the keypoint position
+
+
         l_dense_attention = criterion_dense_attention(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
         l_chamfer = criterion_chamfer(bin_edges, depth.float())
-        l_grad = criterion_grad(pred, depth.detach().float(), mask=attention_mask.to(torch.bool), interpolate=True) # add the grad loss on people mask 
+        l_grad = criterion_grad(pred, depth.detach().float(), mask=attention_mask.to(torch.bool), interpolate=True) # do not add this loss 
         # print(l_grad)
-        loss_depth = l_dense + 0.1 * l_chamfer + l_dense_attention # pay more attention to the  #+ 2e-3 * l_grad # pay attention to the foreground and control the grad
+
+        l_fore_depth =criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
+        losses_fore_depth.update(l_fore_depth.item())
+
+        loss_depth = l_dense + 0.1 * l_chamfer + 1.1 * l_dense_attention # pay more attention to the  #+ 2e-3 * l_grad # pay attention to the foreground and control the grad
         losses_depth.update(loss_depth.item())
 
         # hm loss
@@ -96,10 +105,11 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
                   'Loss_depth: {loss_2d.val:.7f} ({loss_2d.avg:.7f})\t' \
                   'Loss_hm: {loss_3d.val:.7f} ({loss_3d.avg:.7f})\t' \
                   'Loss_mask: {loss_cord.val:.6f} ({loss_cord.avg:.6f})\t' \
+                  'Loss_fore_depth: {loss_fore_depth.val:.6f}({loss_fore_depth.avg:.6f})\t' \
                   'Memory {memory:.1f}'.format(
                     epoch, i, len(loader), batch_time=batch_time,
                     speed=image.size(0) / batch_time.val,
-                    data_time=data_time, loss=losses, loss_2d=losses_depth, loss_3d=losses_hm,
+                    data_time=data_time, loss=losses, loss_2d=losses_depth, loss_3d=losses_hm, loss_fore_depth = losses_fore_depth,
                     loss_cord=losses_mask, memory=gpu_memory_usage)
             logger.info(msg)
 
@@ -157,12 +167,15 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
     losses_depth = AverageMeter()
     losses_hm = AverageMeter()
     losses_mask = AverageMeter()
+    losses_fore_depth = AverageMeter()
+
     metrics_c = RunningAverageDict()
     criterion_hm = PerJointMSELoss().cuda()
     criterion_dense = SILogLoss().cuda()
     criterion_chamfer = BinsChamferLoss().cuda()
     criterion_mask = CrossEntropyMaskLoss().cuda()
-
+    criterion_fore_depth = foreground_depth_loss().cuda()
+    
     model.eval()
 
     with torch.no_grad():
@@ -183,9 +196,11 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
             # vis_mask = (mask_prob > 0.5).astype(np.int)
 
             depth_mask = depth > config.DATASET.MIN_DEPTH
+            attention_mask = depth_mask * mask_gt
             l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True)
             losses_depth.update(l_dense.item())
-
+            l_fore_depth = criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
+            losses_fore_depth.update(l_fore_depth.item())
             pred = nn.functional.interpolate(pred, depth.shape[-2:], mode='bilinear', align_corners=True)
 
             pred = pred.detach().cpu().numpy()
@@ -196,9 +211,10 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
 
             depth_gt = depth.cpu().numpy()
             valid_mask = np.logical_and(depth_gt > config.DATASET.MIN_DEPTH, depth_gt < config.DATASET.MAX_DEPTH)
-            # import pdb; pdb.set_trace()
+
             metrics_c.update(compute_errors(depth_gt[valid_mask], pred[valid_mask]))
-                    
+
+
             batch_time.update(time.time() - end)
             end = time.time()
             if i % config.PRINT_FREQ == 0 or i == len(loader) - 1:
@@ -207,13 +223,14 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
                       'Time: {batch_time.val:.3f}s ({batch_time.avg:.3f}s)\t' \
                       'Speed: {speed:.1f} samples/s\t' \
                       'Data: {data_time.val:.3f}s ({data_time.avg:.3f}s)\t' \
+                      'loss_fore: {losses_fore_depth.val:.3f} ({losses_fore_depth.avg:.3f})\t' \
                       'Memory {memory:.1f}'.format(
                         i, len(loader), batch_time=batch_time,
                         speed=image.size(0) / batch_time.val,
-                        data_time=data_time, memory=gpu_memory_usage)
+                        data_time=data_time,losses_fore_depth = losses_fore_depth ,memory=gpu_memory_usage)
                 logger.info(msg)
 
-                if i % 500 == 0:
+                if i % 1000 == 0:
                     # save fig
                     vis_depth = pred[0,0,...]
                     temp_mask = mask_prob[0,0,...].detach().cpu().numpy()
@@ -255,11 +272,14 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
     losses_depth = AverageMeter()
     losses_hm = AverageMeter()
     losses_mask = AverageMeter()
+    losses_fore_depth = AverageMeter()
+
     metrics_c = RunningAverageDict()
     criterion_hm = PerJointMSELoss().cuda()
     criterion_dense = SILogLoss().cuda()
     criterion_chamfer = BinsChamferLoss().cuda()
     criterion_mask = CrossEntropyMaskLoss().cuda()
+    criterion_fore_depth = foreground_depth_loss().cuda()
 
     model.eval()
 
@@ -300,16 +320,18 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 # vis_mask = (mask_prob > 0.5).astype(np.int)
 
                 depth_mask = depth > config.DATASET.MIN_DEPTH
+                attention_mask = depth_mask * mask_gt
+                
+                
                 l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True)
                 losses_depth.update(l_dense.item())
                 
-                # copy_pred = pred[0:1,0:1,...]
-
-                # a=np.array([[-3, 0, 3],[-10,0,10],[-3,0,3]])
-                
+                l_fore_depth = criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
+                print(f'The avg loss is {l_fore_depth.item()}')
+                losses_fore_depth.update(l_fore_depth.item())
                         
 
-                pred = nn.functional.interpolate(pred, depth.shape[-2:], mode='bilinear', align_corners=True)
+                # pred = nn.functional.interpolate(pred, depth.shape[-2:], mode='bilinear', align_corners=True) # no interpolate
 
                 # grad_x = scharrx(pred)
 
@@ -338,12 +360,16 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
 
                 valid_mask = np.logical_and(depth_gt > config.DATASET.MIN_DEPTH, depth_gt < config.DATASET.MAX_DEPTH)
                 # import pdb; pdb.set_trace()
-                metrics_c.update(compute_errors(depth_gt[valid_mask], pred[valid_mask]))
+                # metrics_c.update(compute_errors(depth_gt[valid_mask], pred[valid_mask])) # TODO: hidden
 
 
                 # vis the first batch
-                vis_depth = pred[0,0,...]
-                temp_mask = mask_prob[0,0,...].detach().cpu().numpy()
+                vis_depth = pred[0,0,...] # TODO
+                # changed to ground truth
+                # vis_depth = depth_gt[0,0,...]
+                fitted_mask = F.interpolate(mask_prob, scale_factor=0.5)
+                temp_mask = fitted_mask[0,0,...].detach().cpu().numpy()
+
                 vis_mask = (temp_mask>0.5).astype(np.uint8)
                 # erode the mask
                 kernel = np.ones((5,5),np.uint8)
@@ -364,11 +390,24 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 plt.imshow(filter_depth)
                 plt.savefig(f'debug_pics/debug_filter_{view}.png')
                 # import pdb; pdb.set_trace()
+                hm_sampling,_ = torch.max(heatmap, dim = 1, keepdims=True)
+                hm_max = torch.max(hm_sampling)
+                # get one sampling mask
+                choice_generator = 2 * hm_max * torch.rand(hm_sampling.shape).to(device)
+                hm_sampling_mask = hm_sampling > choice_generator
 
+                vis_sampling_mask = hm_sampling_mask[0,0,...].detach().cpu().numpy()
+                
+                plt.imshow(vis_sampling_mask)
+                plt.savefig(f'debug_pics/debug_sampling_mask_{view}.png')
+                # print(hm_sampling.shape)
+                # vis_hm = hm_gt[0,0,...].detach().cpu().numpy()
+                # plt.imshow(vis_hm)
+                # plt.savefig(f'debug_pics/debug_gt_hm_{view}.png')
                 _ , point_3D = unprojectPoints(vis_depth,K_matrix[0],M_matrix[0],diff[0])
                 point_panoptic = trans_matrix[0] @ point_3D
                 point_panoptic = point_panoptic[:3,:].transpose()
-                filter_mask = vis_mask * filter_depth
+                filter_mask = vis_mask * filter_depth * vis_sampling_mask # for 
                 # mask_filt = vis_mask.reshape(-1)
                 mask_filt = filter_mask.reshape(-1)
 
@@ -376,8 +415,8 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 filter_points = point_panoptic[np.where(mask_filt==1)]
                 total_points.append(filter_points)
                 
-                with open(f'points_debug/point_whole_{view}.pkl','wb') as dfile:
-                    pickle.dump(point_panoptic,dfile)
+                # with open(f'points_debug/point_whole_{view}.pkl','wb') as dfile:
+                #     pickle.dump(point_panoptic,dfile)
 
                 with open(f'points_debug/point_{view}.pkl','wb') as dfile:
                     pickle.dump(filter_points,dfile)
@@ -436,13 +475,14 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
 
 def unprojectPoints(depth, K, M, diff):
     H,W = depth.shape
+    #import pdb; pdb.set_trace()
     x_cor, y_cor = np.meshgrid(range(W), range(H))
-    x_cor = x_cor + 141 # for croping 
+    x_cor = x_cor + 71 # for croping 
     # do the transformation 
     orig_H = 1080
     orig_W = 1920
-    x_cor = x_cor * (orig_W / W)
-    y_cor = y_cor * (orig_H / H)
+    x_cor = x_cor * (orig_W / (480)) # TODO: this is for croping size
+    y_cor = y_cor * (orig_H / H) # / the value of orig resize size
     x_cor = x_cor.reshape(-1,1)
     y_cor = y_cor.reshape(-1,1)
 

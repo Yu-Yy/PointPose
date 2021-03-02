@@ -12,7 +12,7 @@ class SILogLoss(nn.Module):  # Main loss function used in AdaBins paper
 
     def forward(self, input, target, mask=None, interpolate=True):
         if interpolate:
-            input = nn.functional.interpolate(input, target.shape[-2:], mode='bilinear', align_corners=True) 
+            input = nn.functional.interpolate(input, target.shape[-2:], mode='bilinear', align_corners=True)
 
         if mask is not None:
             input = input[mask]
@@ -24,6 +24,7 @@ class SILogLoss(nn.Module):  # Main loss function used in AdaBins paper
 
         Dg = torch.var(g) + 0.15 * torch.pow(torch.mean(g), 2)
         return 10 * torch.sqrt(Dg)
+
 
 class SILogLoss_grad(nn.Module):  # Main loss function used in AdaBins paper
     def __init__(self):
@@ -118,4 +119,22 @@ class CrossEntropyMaskLoss(nn.Module):
         loss = self.criterion(input, gt_mask)
         return loss
 
-        
+class foreground_depth_loss(nn.Module):
+    def __init__(self):
+        super(foreground_depth_loss, self).__init__()
+        self.name = 'loss_test'
+
+    def forward(self, input, target, mask=None, interpolate=True):
+        if interpolate:
+            input = nn.functional.interpolate(input, target.shape[-2:], mode='bilinear', align_corners=True)
+
+        if mask is not None:
+            input = input[mask]
+            target = target[mask]
+        g = input - target
+        # n, c, h, w = g.shape
+        # norm = 1/(h*w)
+        # Dg = norm * torch.sum(g**2) - (0.85/(norm**2)) * (torch.sum(g))**2
+
+        Dg = torch.pow(g, 2)
+        return torch.mean(torch.sqrt(Dg))
