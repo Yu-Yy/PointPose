@@ -1,4 +1,3 @@
 {
-    "git.ignoreLimitWarning": true,
-    "python.pythonPath": "/home/panzhiyu/miniconda3/envs/py38_pzy/bin/python"
+    "git.ignoreLimitWarning": true
 }
