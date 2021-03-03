@@ -131,9 +131,9 @@ dmypy.json
 output*
 
 
-models/
-log 
-data
+models_bak/
+log/ 
+data/
 test*
 debug*
 trash/
