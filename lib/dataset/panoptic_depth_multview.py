@@ -199,7 +199,7 @@ class Panoptic_Depth(Dataset):
 
             depth_c[color_map[:,1:2],color_map[:,0:1]] = depth_proc # not the filling
 
-            img_frame = cv2.imread(osp.join(self.image_folder,self.scene_list[scene_index],'kinectImgs',f'50_0{int(view)}',f'50_0{int(view)}_{int(target_frame_rgb_idx + 1):0>8d}.jpg'),
+            img_frame = cv2.imread(osp.join(self.image_folder,self.scene_list[scene_index],'kinectImgs',f'50_{int(view):0>2d}',f'50_{int(view):0>2d}_{int(target_frame_rgb_idx + 1):0>8d}.jpg'),
                                 cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
 
             # do the transform
@@ -234,7 +234,7 @@ class Panoptic_Depth(Dataset):
             # mask_out = depth_out > 0.01
             # read in the mask
             try:
-                mask_gt = cv2.imread(osp.join(self.image_folder,self.scene_list[scene_index],'hd_mask',f'50_0{int(view)}',f'50_0{int(view)}_{int(target_frame_rgb_idx + 1):0>8d}.jpg'), cv2.IMREAD_GRAYSCALE)
+                mask_gt = cv2.imread(osp.join(self.image_folder,self.scene_list[scene_index],'hd_mask',f'50_{int(view):0>2d}',f'50_{int(view):0>2d}_{int(target_frame_rgb_idx + 1):0>8d}.jpg'), cv2.IMREAD_GRAYSCALE)
                 mask_gt = cv2.warpAffine(
                                 mask_gt,
                                 trans, (int(self.input_size[0]), int(self.input_size[1])),

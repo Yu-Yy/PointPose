@@ -103,7 +103,7 @@ class PerJointMSELoss(nn.Module):
         else:
             loss_global = self.criterion(output, target)
 
-        loss = 0.1 * loss_global + 0.9 * loss_attention # pay attention to the hm lighted
+        loss = 0.1 * loss_global + 0.9 * loss_attention # pay more attention to the hm lighted # It is affected by the view number ?
         return loss
 
 class CrossEntropyMaskLoss(nn.Module):

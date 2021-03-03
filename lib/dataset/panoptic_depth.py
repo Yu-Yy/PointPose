@@ -173,72 +173,72 @@ class Panoptic_Depth(Dataset):
         depth_c[color_map[:,1:2],color_map[:,0:1]] = depth_proc
         # plt.imshow(depth_c,cmap='magma_r')
         # plt.savefig(f'test_debug{int(self.view_set[view_index])}.png')
-        pre_fill_region = depth_c < 0.01
+        # pre_fill_region = depth_c < 0.01
         # only fill the sides region
-        side_region = np.full([self.image_size[1],self.image_size[0]],False)
-        side_region[:,:250] = True
-        side_region[:,1700:] = True
+        # side_region = np.full([self.image_size[1],self.image_size[0]],False)
+        # side_region[:,:250] = True
+        # side_region[:,1700:] = True
         # full_fill the incomplete part
-        for idx, view in enumerate(view_list):
-            if depth_fill_idx[idx] is None:
-                continue
-            depth_idx = depth_fill_idx[idx]
-            fdepth_v = open(os.path.join(self.image_folder,self.scene_list[scene_index],'kinect_shared_depth',f'KINECTNODE{int(view)}','depthdata.dat'),'rb')
-            fdepth_v.seek(2*self.single_size*(depth_idx), os.SEEK_SET)
-            depth_org_f = np.fromfile(fdepth_v, count = self.single_size, dtype=np.int16)
-            depth_org_f = depth_org_f.reshape([self.depth_size[1],self.depth_size[0]])
-            depth_org_f = depth_org_f[...,::-1] * 0.001 # change in meter 
-            depth_proc_f = depth_org_f.reshape(-1,1)
-            # unproject
-            kcalibdata_f = self.kcalib_data[scene_index]['sensors'][int(view-1)]
-            point_3D_f, point_3d_f = self.__unprojectPoints__(kcalibdata_f, depth_org_f) # may not the same coordinate 
-            # trans to panop and trans to current view 3D coord
-            # read in calib data 
-            panoptic_calibData_f = self.calib_data[scene_index]['cameras'][view + 509] # from 510 to 519
-            M_f = np.concatenate([np.array(panoptic_calibData_f['R']),np.array(panoptic_calibData_f['t'])],axis=-1)
-            T_panopticWorld2KinectColor_f = np.concatenate([M_f,np.array([[0,0,0,1]])],axis=0)
-            T_kinectColor2PanopticWorld_f = np.linalg.pinv(T_panopticWorld2KinectColor_f)
+        # for idx, view in enumerate(view_list):
+        #     if depth_fill_idx[idx] is None:
+        #         continue
+        #     depth_idx = depth_fill_idx[idx]
+        #     fdepth_v = open(os.path.join(self.image_folder,self.scene_list[scene_index],'kinect_shared_depth',f'KINECTNODE{int(view)}','depthdata.dat'),'rb')
+        #     fdepth_v.seek(2*self.single_size*(depth_idx), os.SEEK_SET)
+        #     depth_org_f = np.fromfile(fdepth_v, count = self.single_size, dtype=np.int16)
+        #     depth_org_f = depth_org_f.reshape([self.depth_size[1],self.depth_size[0]])
+        #     depth_org_f = depth_org_f[...,::-1] * 0.001 # change in meter 
+        #     depth_proc_f = depth_org_f.reshape(-1,1)
+        #     # unproject
+        #     kcalibdata_f = self.kcalib_data[scene_index]['sensors'][int(view-1)]
+        #     point_3D_f, point_3d_f = self.__unprojectPoints__(kcalibdata_f, depth_org_f) # may not the same coordinate 
+        #     # trans to panop and trans to current view 3D coord
+        #     # read in calib data 
+        #     panoptic_calibData_f = self.calib_data[scene_index]['cameras'][view + 509] # from 510 to 519
+        #     M_f = np.concatenate([np.array(panoptic_calibData_f['R']),np.array(panoptic_calibData_f['t'])],axis=-1)
+        #     T_panopticWorld2KinectColor_f = np.concatenate([M_f,np.array([[0,0,0,1]])],axis=0)
+        #     T_kinectColor2PanopticWorld_f = np.linalg.pinv(T_panopticWorld2KinectColor_f)
             
-            T_kinectColor2KinectLocal_f = np.array(kcalibdata_f['M_color'])
-            T_kinectLocal2KinectColor_f = np.linalg.pinv(T_kinectColor2KinectLocal_f)
-            T_kinectLocal2PanopticWorld_f = T_kinectColor2PanopticWorld_f @ self.scale_kinoptic2panoptic @ T_kinectLocal2KinectColor_f
-            # To pan and then to this view
-            point_3D_pan_f = T_kinectLocal2PanopticWorld_f @ point_3D_f
-            point_3D_f = T_Panoptic2kinectLocal @ point_3D_pan_f   # --------
-            # project in current view
-            K_color_f = np.array(kcalibdata['K_color'])
-            M_color_f = np.array(kcalibdata['M_color'])
-            R_f = M_color_f[:3,:3]
-            t_f = M_color_f[:3,3:4]
-            Kd_f = np.array(kcalibdata['distCoeffs_color'])
-            color_2d_f, depth_val_f = self.__projectPoints__(point_3D_f[:3,:],K_color_f,R_f,t_f,Kd_f)
-            color_2d_f = color_2d_f[:2,:].transpose() # the color plane coordinate
-            depth_fill = np.full([self.image_size[1],self.image_size[0]],0)
-            color_map_f = color_2d_f.astype(np.int16)
-            x_check = np.bitwise_and(color_map_f[:,0:1] >= 0, 
-                                        color_map_f[:,0:1] <= self.image_size[0] - 1) #(15,) bool
-            y_check = np.bitwise_and(color_map_f[:,1:2] >= 0,
-                                        color_map_f[:,1:2] <= self.image_size[1] - 1)
-            color_map_f[:,0] = np.clip(color_map_f[:,0], 0, self.image_size[0]-1)
-            color_map_f[:,1] = np.clip(color_map_f[:,1], 0, self.image_size[1]-1)
-            check = np.bitwise_and(x_check, y_check)
-            depth_fill[color_map_f[:,1:2],color_map_f[:,0:1]] = np.where(check, depth_val_f, 0)
-            depth_fill = np.clip(depth_fill,0,np.inf)
-            # plt.imshow(depth_fill,cmap='magma_r')
-            # plt.savefig(f'test_debug{view}.png')
-            vali_mask = depth_fill > 0.01
-            current_vali = depth_c < 0.01
-            depth_c = np.where(reduce(np.bitwise_and,[side_region, pre_fill_region, vali_mask, np.bitwise_or(depth_fill< depth_c,current_vali)]), depth_fill, depth_c)
-            # if idx == 0:
-            #     vali_mask = depth_fill != 10
-            #     depth_c = np.where(np.bitwise_and(pre_fill_region,vali_mask), depth_fill, depth_c)
-            # else:
-            #     depth_c = np.where(np.bitwise_and(pre_fill_region, depth_fill< depth_c), depth_fill, depth_c)
+        #     T_kinectColor2KinectLocal_f = np.array(kcalibdata_f['M_color'])
+        #     T_kinectLocal2KinectColor_f = np.linalg.pinv(T_kinectColor2KinectLocal_f)
+        #     T_kinectLocal2PanopticWorld_f = T_kinectColor2PanopticWorld_f @ self.scale_kinoptic2panoptic @ T_kinectLocal2KinectColor_f
+        #     # To pan and then to this view
+        #     point_3D_pan_f = T_kinectLocal2PanopticWorld_f @ point_3D_f
+        #     point_3D_f = T_Panoptic2kinectLocal @ point_3D_pan_f   # --------
+        #     # project in current view
+        #     K_color_f = np.array(kcalibdata['K_color'])
+        #     M_color_f = np.array(kcalibdata['M_color'])
+        #     R_f = M_color_f[:3,:3]
+        #     t_f = M_color_f[:3,3:4]
+        #     Kd_f = np.array(kcalibdata['distCoeffs_color'])
+        #     color_2d_f, depth_val_f = self.__projectPoints__(point_3D_f[:3,:],K_color_f,R_f,t_f,Kd_f)
+        #     color_2d_f = color_2d_f[:2,:].transpose() # the color plane coordinate
+        #     depth_fill = np.full([self.image_size[1],self.image_size[0]],0)
+        #     color_map_f = color_2d_f.astype(np.int16)
+        #     x_check = np.bitwise_and(color_map_f[:,0:1] >= 0, 
+        #                                 color_map_f[:,0:1] <= self.image_size[0] - 1) #(15,) bool
+        #     y_check = np.bitwise_and(color_map_f[:,1:2] >= 0,
+        #                                 color_map_f[:,1:2] <= self.image_size[1] - 1)
+        #     color_map_f[:,0] = np.clip(color_map_f[:,0], 0, self.image_size[0]-1)
+        #     color_map_f[:,1] = np.clip(color_map_f[:,1], 0, self.image_size[1]-1)
+        #     check = np.bitwise_and(x_check, y_check)
+        #     depth_fill[color_map_f[:,1:2],color_map_f[:,0:1]] = np.where(check, depth_val_f, 0)
+        #     depth_fill = np.clip(depth_fill,0,np.inf)
+        #     # plt.imshow(depth_fill,cmap='magma_r')
+        #     # plt.savefig(f'test_debug{view}.png')
+        #     vali_mask = depth_fill > 0.01
+        #     current_vali = depth_c < 0.01
+        #     depth_c = np.where(reduce(np.bitwise_and,[side_region, pre_fill_region, vali_mask, np.bitwise_or(depth_fill< depth_c,current_vali)]), depth_fill, depth_c)
+        #     # if idx == 0:
+        #     #     vali_mask = depth_fill != 10
+        #     #     depth_c = np.where(np.bitwise_and(pre_fill_region,vali_mask), depth_fill, depth_c)
+        #     # else:
+        #     #     depth_c = np.where(np.bitwise_and(pre_fill_region, depth_fill< depth_c), depth_fill, depth_c)
 
         # get the cooresponding rgb
         # plt.imshow(depth_c,cmap='magma_r')
         # plt.savefig(f'test_debug_f.png')
-        img_frame = cv2.imread(osp.join(self.image_folder,self.scene_list[scene_index],'kinectImgs',f'50_0{int(self.view_set[view_index])}',f'50_0{int(self.view_set[view_index])}_{int(target_frame_idx + 1):0>8d}.jpg'),
+        img_frame = cv2.imread(osp.join(self.image_folder,self.scene_list[scene_index],'kinectImgs',f'50_{int(self.view_set[view_index]):0>2d}',f'50_{int(self.view_set[view_index]):0>2d}_{int(target_frame_idx + 1):0>8d}.jpg'),
                                 cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
         # img_frame = cv2.cvtColor(img_frame,cv2.COLOR_BGR2RGB)
 
@@ -275,7 +275,7 @@ class Panoptic_Depth(Dataset):
         # mask_out = depth_out > 0.01
         # read in the mask
         try:
-            mask_gt = cv2.imread(osp.join(self.image_folder,self.scene_list[scene_index],'hd_mask',f'50_0{int(self.view_set[view_index])}',f'50_0{int(self.view_set[view_index])}_{int(target_frame_idx + 1):0>8d}.jpg'), cv2.IMREAD_GRAYSCALE)
+            mask_gt = cv2.imread(osp.join(self.image_folder,self.scene_list[scene_index],'hd_mask',f'50_{int(self.view_set[view_index]):0>2d}',f'50_{int(self.view_set[view_index]):0>2d}_{int(target_frame_idx + 1):0>8d}.jpg'), cv2.IMREAD_GRAYSCALE)
             mask_gt = cv2.warpAffine(
                             mask_gt,
                             trans, (int(self.input_size[0]), int(self.input_size[1])),

@@ -57,7 +57,7 @@ NETWORK: # for the
   HEATMAP_SIZE:
   - 480
   - 256 # 其实用不到
-  SIGMA: 5 # larger sigma
+  SIGMA: 6 # larger sigma
   NUM_JOINTS: 19
   USE_GT: False
   POOLING: False
@@ -142,7 +142,7 @@ POSE_RESNET:   # 替换成higher_HRnet
 LOSS:
   USE_TARGET_WEIGHT: true
 TRAIN:
-  BATCH_SIZE: 7
+  BATCH_SIZE: 8
   SHUFFLE: true
   BEGIN_EPOCH: 0
   END_EPOCH: 10
@@ -152,7 +152,7 @@ TRAIN:
 
 TEST:
   MODEL_FILE: 'model_best.pth.tar' #'final_state.pth.tar' 
-  BATCH_SIZE: 6 # orig 6
+  BATCH_SIZE: 8 # orig 6
 DEBUG:
   DEBUG: true
   SAVE_HEATMAPS_GT: true

@@ -74,7 +74,7 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
         l_fore_depth =criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
         losses_fore_depth.update(l_fore_depth.item())
 
-        loss_depth = l_dense + 0.1 * l_chamfer + 1.1 * l_dense_attention # pay more attention to the  #+ 2e-3 * l_grad # pay attention to the foreground and control the grad
+        loss_depth = l_dense + 0.1 * l_chamfer +  l_dense_attention # pay more attention to the  #+ 2e-3 * l_grad # pay attention to the foreground and control the grad
         losses_depth.update(loss_depth.item())
 
         # hm loss
