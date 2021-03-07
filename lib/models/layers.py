@@ -11,7 +11,7 @@ class PatchTransformerEncoder(nn.Module):
         self.embedding_convPxP = nn.Conv2d(in_channels, embedding_dim,
                                            kernel_size=patch_size, stride=patch_size, padding=0)
 
-        self.positional_encodings = nn.Parameter(torch.rand(500, embedding_dim), requires_grad=True)  # (h/2//patch * w/2//patch) < 500
+        self.positional_encodings = nn.Parameter(torch.rand(500, embedding_dim), requires_grad=True)  # (h/2//patch * w/2//patch) [sequence number is less than 500]< 500
 
     def forward(self, x):
         embeddings = self.embedding_convPxP(x).flatten(2)  # .shape = n,c,s = n, embedding_dim, s   # batch, channel, multiply

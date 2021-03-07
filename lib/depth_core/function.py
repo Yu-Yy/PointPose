@@ -374,7 +374,8 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 # erode the mask
                 kernel = np.ones((5,5),np.uint8)
                 # kernel = CV2.getStructuringElement(CV2.MORPH_ELLIPSE,(5,5))
-                vis_mask = cv2.erode(vis_mask,kernel,iterations = 1)
+
+                vis_mask = cv2.erode(vis_mask,kernel,iterations = 1) # no erosion
 
                 # get the gradient graph
                 scharrx = cv2.Sobel(vis_depth, cv2.CV_64F, 1, 0, ksize=-1)
@@ -407,12 +408,12 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 _ , point_3D = unprojectPoints(vis_depth,K_matrix[0],M_matrix[0],diff[0])
                 point_panoptic = trans_matrix[0] @ point_3D
                 point_panoptic = point_panoptic[:3,:].transpose()
-                filter_mask = vis_mask * filter_depth * vis_sampling_mask # for 
+                filter_mask = vis_mask * filter_depth * vis_sampling_mask # for TODO: 
                 # mask_filt = vis_mask.reshape(-1)
                 mask_filt = filter_mask.reshape(-1)
 
                 # get the gt points
-                filter_points = point_panoptic[np.where(mask_filt==1)]
+                filter_points = point_panoptic[np.where(mask_filt==1)] # select the feature at the same time
                 total_points.append(filter_points)
                 
                 # with open(f'points_debug/point_whole_{view}.pkl','wb') as dfile:
