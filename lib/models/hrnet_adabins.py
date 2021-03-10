@@ -27,7 +27,7 @@ class HrnetAdaptiveBins(nn.Module):
         # mask and poseH output
         heatmap, mask_prob = self.PM_header(hrnet_out)
 
-        return bin_edges, pred, heatmap, mask_prob
+        return bin_edges, pred, heatmap, mask_prob, hrnet_out
 
     @classmethod
     def build(cls, cfg, is_train, **kwargs):

@@ -112,6 +112,7 @@ config.DATASET.TRAIN_VIEW_SET = [1]
 config.DATASET.TEST_VIEW_SET = [1]
 config.DATASET.MIN_DEPTH = 0.01
 config.DATASET.MAX_DEPTH = 8.0
+config.DATASET.MAX_PEOPLE_NUM = 10
 config.DATASET.ROOT = '../data/h36m/'
 config.DATASET.KP_ROOT = '../data/'
 config.DATASET.TRAIN_DATASET = 'mixed_dataset'

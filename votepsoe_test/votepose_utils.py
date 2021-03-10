@@ -1,4 +1,6 @@
-
+'''
+    TODO: transfer this code into the libs/models
+'''
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -33,7 +35,7 @@ class VotePoseBackbone(nn.Module):
         self.sa1 = PointnetSAModuleVotes(
                 npoint=256,
                 radius=0.2,
-                nsample=1024,
+                nsample=256, # ?? orig 1024  
                 mlp=[input_feature_dim, 64, 64, 128],
                 use_xyz=True,
                 normalize_xyz=True
@@ -169,7 +171,7 @@ def decode_scores(net, end_points):
     
     base_xyz = end_points['aggregated_vote_xyz'] # (batch_size, num_proposal, 3)
     center = base_xyz + net_transposed[:,:,2:5] # (batch_size, num_proposal, 3)
-    end_points['center'] = center
+    end_points['center'] = center # with batch size
     return end_points
 
 class VotePoseProposal(nn.Module):
@@ -223,7 +225,7 @@ class VotePoseProposal(nn.Module):
             sample_inds = torch.randint(0, num_seed, (batch_size, self.num_proposal), dtype=torch.int).cuda()
             xyz, features, _ = self.vote_aggregation(xyz, features, sample_inds)
         else:
-            log_string('Unknown sampling strategy: %s. Exiting!'%(self.sampling))
+            # log_string('Unknown sampling strategy: %s. Exiting!'%(self.sampling))
             exit()
         end_points['aggregated_vote_xyz'] = xyz # (batch_size, num_proposal, 3)
         end_points['aggregated_vote_inds'] = sample_inds # (batch_size, num_proposal,) # should be 0,1,2,...,num_proposal
@@ -239,31 +241,24 @@ class VotePoseProposal(nn.Module):
         return end_points
 
 def compute_vote_loss(end_points, gt_points):
-    vote_xyz = end_points['vote_xyz']
-    seed_xyz = end_points['seed_xyz']
+    
+    # seed_xyz = end_points['seed_xyz'] # if for seed loss, 
     #[B,N,3]
-    #vote_shift = vote_xyz - seed_xyz
-    batch_size = vote_xyz.shape[0]
-    shift_loss = 0
-    for b in range(batch_size):
-        dist1, ind1, dist2, ind2 = nn_distance(vote_xyz[b], gt_points[b])
-        gt_seed_xyz = gt_points[ind1,:]
-        shift_loss_tmp = vote_xyz - gt_seed_xyz #[B,N,3]
-        shift_loss += torch.sum(torch.norm(shift_loss_tmp, dim = 2)) / shift_loss_tmp.shape[0] / shift_loss_tmp.shape[1]
-    #gt_points['vote_loss'] = shift_loss
+    vote_xyz = end_points['vote_xyz']
+    dist1, ind1, dist2, ind2 = nn_distance(vote_xyz, gt_points) # 
+    shift_loss = torch.mean(dist1)
     return shift_loss
 
 def compute_proposal_loss(end_points, gt_points):
     center_proposal = end_points['center']
     objectness_proposal = end_points['objectness_scores']
     batch_size = center_proposal.shape[0]
-    distance_loss = objectness_loss = 0
-    for b in range(batch_size):
-        dist1, ind1, dist2, ind2 = nn_distance(center_proposal[b], gt_points[b])
-        positive_mask = (dist1 <= 0.15)
-        criterion = nn.CrossEntropyLoss()
-        objectness_loss += criterion(positive_mask.float(), objectness_proposal[b])
-        distance_loss += torch.sum(dist1[positive_mask]) / torch.sum(positive_mask.float()) * 100
+    dist1, ind1, dist2, ind2 = nn_distance(center_proposal, gt_points)
+    
+    positive_mask = (dist1 <= 0.15*0.15)
+    criterion = nn.CrossEntropyLoss()
+    objectness_loss = criterion(objectness_proposal.reshape(-1,2), positive_mask.reshape(-1).long()) # 是否为关节点，交叉loss
+    distance_loss = torch.mean(dist1[positive_mask])   #/ torch.sum(positive_mask) #* 100
     return objectness_loss, distance_loss
 
 def get_loss(end_points, gt_points):

@@ -8,13 +8,15 @@ import os
 import copy
 import pickle
 
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from torch.nn.functional import interpolate
 from depth_core.loss import SILogLoss, BinsChamferLoss, PerJointMSELoss, CrossEntropyMaskLoss, SILogLoss_grad, foreground_depth_loss
-from depth_core.utils_depth import RunningAverage, compute_errors, RunningAverageDict
+from depth_core.utils_depth import RunningAverage, compute_errors, RunningAverageDict, grad_generation, erode_generation, get_3d_points
 
 
 # from models.hrnet_adabins import HrnetAdaptiveBins
@@ -280,7 +282,13 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
     criterion_chamfer = BinsChamferLoss().cuda()
     criterion_mask = CrossEntropyMaskLoss().cuda()
     criterion_fore_depth = foreground_depth_loss().cuda()
+    generator_gradient = grad_generation().cuda()
+    erode = erode_generation().cuda()
+    orig_w = 1920
+    orig_h = 1080
+    points_extractor = get_3d_points(orig_W=orig_w, orig_H =orig_h).cuda()
 
+    
     model.eval()
 
     with torch.no_grad():
@@ -289,11 +297,11 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
             if len(batch) == 0:
                 continue
             data_time.update(time.time() - end)
-            output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff = batch
+            output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
             batch_num = output_img.shape[0]
             view_num = output_img.shape[1]
             # process in multiple view form
-            total_points = []
+            total_points = [[] for _ in range(batch_num)]
             for view in range(view_num): 
                 image = output_img[:,view,...]
                 depth = output_depth[:,view,...]
@@ -301,21 +309,27 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 hm_gt = output_hm[:,view,...]
                 wt_gt = output_weights[:,view,...]
                 trans_matrix = output_trans[:,view,...]
-                trans_matrix = trans_matrix.numpy()
+                # trans_matrix = trans_matrix.numpy()
                 K_matrix = output_K[:,view,...]
-                K_matrix = K_matrix.numpy()
+                # K_matrix = K_matrix.numpy()
                 M_matrix = output_M[:,view,...]
-                M_matrix = M_matrix.numpy()
+                # M_matrix = M_matrix.numpy()
                 diff = output_diff[:,view,...]
-                diff = diff.numpy()
+                # diff = diff.numpy()
 
                 image = image.to(device)
                 depth = depth.to(device)
                 mask_gt = mask_gt.to(device)
                 hm_gt = hm_gt.to(device)
                 wt_gt = wt_gt.to(device)
+                trans_matrix = trans_matrix.to(device)
+                K_matrix = K_matrix.to(device)
+                M_matrix = M_matrix.to(device)
+                diff = diff.to(device)
+                
 
-                bin_edges, pred, heatmap, mask_prob = model(image)
+
+                bin_edges, pred, heatmap, mask_prob, feature_out = model(image)
 
                 # vis_mask = (mask_prob > 0.5).astype(np.int)
 
@@ -327,22 +341,12 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 losses_depth.update(l_dense.item())
                 
                 l_fore_depth = criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
-                print(f'The avg loss is {l_fore_depth.item()}')
+                # print(f'The avg loss is {l_fore_depth.item()}')
                 losses_fore_depth.update(l_fore_depth.item())
                         
+                pred_process = pred.clone() # for projection
 
-                # pred = nn.functional.interpolate(pred, depth.shape[-2:], mode='bilinear', align_corners=True) # no interpolate
 
-                # grad_x = scharrx(pred)
-
-                # grad_y = scharry(pred)
-
-                # gradxy = torch.sqrt(torch.pow(grad_x, 2) + torch.pow(grad_y, 2))
-
-                # gradxy = gradxy[0,0,...].cpu().numpy()
-                # plt.imshow(gradxy, cmap='gray')
-                # plt.savefig(f'debug_pics/debug_tensor_depthgrad_{view}.png')
-                # import pdb; pdb.set_trace()
                 pred = pred.detach().cpu().numpy()
                 pred[pred < config.DATASET.MIN_DEPTH] = config.DATASET.MIN_DEPTH
                 pred[pred > config.DATASET.MAX_DEPTH] = config.DATASET.MAX_DEPTH
@@ -350,101 +354,120 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 pred[np.isnan(pred)] = config.DATASET.MIN_DEPTH
 
                 depth_gt = depth.cpu().numpy()
-                # vis_depth_gt = depth_gt[0,0,...]
-                # _ ,point_3D_gt = unprojectPoints(vis_depth_gt,K_matrix[0],M_matrix[0],diff[0])
-                # point_panoptic_gt = trans_matrix[0] @ point_3D_gt
-                # point_panoptic_gt = point_panoptic_gt[:3,:].transpose()
-
-                # with open(f'points_debug/point_whole_{view}_gt.pkl','wb') as dfile:
-                #     pickle.dump(point_panoptic_gt,dfile)
-
                 valid_mask = np.logical_and(depth_gt > config.DATASET.MIN_DEPTH, depth_gt < config.DATASET.MAX_DEPTH)
-                # import pdb; pdb.set_trace()
-                # metrics_c.update(compute_errors(depth_gt[valid_mask], pred[valid_mask])) # TODO: hidden
 
-
-                # vis the first batch
-                vis_depth = pred[0,0,...] # TODO
-                # changed to ground truth
-                # vis_depth = depth_gt[0,0,...]
+                # 1. get the mask to do the filtering as "number"
                 fitted_mask = F.interpolate(mask_prob, scale_factor=0.5)
-                temp_mask = fitted_mask[0,0,...].detach().cpu().numpy()
-
-                vis_mask = (temp_mask>0.5).astype(np.uint8)
-                # erode the mask
-                kernel = np.ones((5,5),np.uint8)
-                # kernel = CV2.getStructuringElement(CV2.MORPH_ELLIPSE,(5,5))
-
-                vis_mask = cv2.erode(vis_mask,kernel,iterations = 1) # no erosion
-
-                # get the gradient graph
-                scharrx = cv2.Sobel(vis_depth, cv2.CV_64F, 1, 0, ksize=-1)
-                scharry = cv2.Sobel(vis_depth, cv2.CV_64F, 0, 1, ksize=-1)
-
-                scharrxy = np.sqrt(scharrx*scharrx + scharry*scharry)
-
-                # plt.imshow(scharrxy, cmap='gray')
-                # plt.savefig(f'debug_pics/debug_depthgrad_{view}.png')
-
-                filter_depth = (scharrxy < 1).astype(np.uint8) # for filter
-
-                plt.imshow(filter_depth)
-                plt.savefig(f'debug_pics/debug_filter_{view}.png')
+                # filter mask
+                filter_gradient_mask = generator_gradient(pred_process.clone())
+                # import pdb; pdb.set_trace()
+                # convolution is 2*P = F_size -1 for same 
+                kernel = torch.ones(5,5).to(device)
+                mask = (fitted_mask > 0.5).int()
+                # erosion mask
+                erode_mask = erode(mask,kernel.detach()) # erode error
                 # import pdb; pdb.set_trace()
                 hm_sampling,_ = torch.max(heatmap, dim = 1, keepdims=True)
                 hm_max = torch.max(hm_sampling)
                 # get one sampling mask
                 choice_generator = 2 * hm_max * torch.rand(hm_sampling.shape).to(device)
                 hm_sampling_mask = hm_sampling > choice_generator
+                # import pdb; pdb.set_trace()
 
-                vis_sampling_mask = hm_sampling_mask[0,0,...].detach().cpu().numpy()
+                filter_mask = erode_mask * filter_gradient_mask * hm_sampling_mask
+                # if all the mask is zero, then it is no mean to sample
+                # import pdb; pdb.set_trace()
+                # unproject the depth prediction (pred_process)
                 
-                plt.imshow(vis_sampling_mask)
-                plt.savefig(f'debug_pics/debug_sampling_mask_{view}.png')
-                # print(hm_sampling.shape)
-                # vis_hm = hm_gt[0,0,...].detach().cpu().numpy()
-                # plt.imshow(vis_hm)
-                # plt.savefig(f'debug_pics/debug_gt_hm_{view}.png')
-                _ , point_3D = unprojectPoints(vis_depth,K_matrix[0],M_matrix[0],diff[0])
-                point_panoptic = trans_matrix[0] @ point_3D
-                point_panoptic = point_panoptic[:3,:].transpose()
-                filter_mask = vis_mask * filter_depth * vis_sampling_mask # for TODO: 
-                # mask_filt = vis_mask.reshape(-1)
-                mask_filt = filter_mask.reshape(-1)
+                # TODO : 
+                total_points = points_extractor(pred_process, filter_mask, K_matrix, M_matrix,diff, trans_matrix, total_points, feature_out.clone()) # 
 
-                # get the gt points
-                filter_points = point_panoptic[np.where(mask_filt==1)] # select the feature at the same time
-                total_points.append(filter_points)
-                
-                # with open(f'points_debug/point_whole_{view}.pkl','wb') as dfile:
-                #     pickle.dump(point_panoptic,dfile)
 
-                with open(f'points_debug/point_{view}.pkl','wb') as dfile:
-                    pickle.dump(filter_points,dfile)
+                ## below is the vis part
 
-                plt.imshow(vis_depth, cmap='magma_r')
-                plt.savefig(f'debug_pics/debug_depth_{view}.png')
-                plt.imshow(vis_mask)
-                plt.savefig(f'debug_pics/debug_mask_{view}.png')
+                # # vis the first batch
+                # vis_depth = pred[0,0,...] 
+                # # changed to ground truth
+                # # vis_depth = depth_gt[0,0,...]
+                # fitted_mask = F.interpolate(mask_prob, scale_factor=0.5)
+                # temp_mask = fitted_mask[0,0,...].detach().cpu().numpy()
 
-                # pcd = o3d.geometry.PointCloud()
-                # pcd.points = o3d.utility.Vector3dVector(filter_points.copy() / 100.0)
-                # vis = o3d.visualization.Visualizer()
-                # vis.create_window()
-                # vis.add_geometry(pcd)
-                # vis.update_geometry(pcd)
-                # vis.poll_events()
-                # vis.update_renderer()
-                # vis.capture_screen_image('debug_points.png')
-                # vis.destroy_window()
-                
-                # o3d.visualization.draw_geometries([pcd])
+                # vis_mask = (temp_mask>0.5).astype(np.uint8)
+                # # erode the mask
+                # kernel = np.ones((5,5),np.uint8)
+                # # kernel = CV2.getStructuringElement(CV2.MORPH_ELLIPSE,(5,5))
 
+                # vis_mask = cv2.erode(vis_mask,kernel,iterations = 1) # no erosion
+
+                # # get the gradient graph
+                # scharrx = cv2.Sobel(vis_depth, cv2.CV_64F, 1, 0, ksize=-1)
+                # scharry = cv2.Sobel(vis_depth, cv2.CV_64F, 0, 1, ksize=-1)
+
+                # scharrxy = np.sqrt(scharrx*scharrx + scharry*scharry)
+
+                # # plt.imshow(scharrxy, cmap='gray')
+                # # plt.savefig(f'debug_pics/debug_depthgrad_{view}.png')
+
+                # filter_depth = (scharrxy < 1).astype(np.uint8) # for filter
+
+                # plt.imshow(filter_depth)
+                # plt.savefig(f'debug_pics/debug_filter_{view}.png')
+                # # import pdb; pdb.set_trace()
                 
 
-            total_points = np.concatenate(total_points, axis=0)
-            with open(f'points_debug/point_total.pkl','wb') as dfile:
-                pickle.dump(total_points,dfile)
+                # vis_sampling_mask = hm_sampling_mask[0,0,...].detach().cpu().numpy()
+                
+                # plt.imshow(vis_sampling_mask)
+                # plt.savefig(f'debug_pics/debug_sampling_mask_{view}.png')
+                # # print(hm_sampling.shape)
+                # # vis_hm = hm_gt[0,0,...].detach().cpu().numpy()
+                # # plt.imshow(vis_hm)
+                # # plt.savefig(f'debug_pics/debug_gt_hm_{view}.png')
+                # _ , point_3D = unprojectPoints(vis_depth,K_matrix[0],M_matrix[0],diff[0])
+                # point_panoptic = trans_matrix[0] @ point_3D
+                # point_panoptic = point_panoptic[:3,:].transpose()
+                # filter_mask = vis_mask * filter_depth * vis_sampling_mask # TODO: 
+                # # mask_filt = vis_mask.reshape(-1)
+                # mask_filt = filter_mask.reshape(-1)
+
+                # # get the gt points
+                # filter_points = point_panoptic[np.where(mask_filt==1)] # select the feature at the same time
+                # total_points.append(filter_points)
+                
+                # # with open(f'points_debug/point_whole_{view}.pkl','wb') as dfile:
+                # #     pickle.dump(point_panoptic,dfile)
+
+                # with open(f'points_debug/point_{view}.pkl','wb') as dfile:
+                #     pickle.dump(filter_points,dfile)
+
+                # plt.imshow(vis_depth, cmap='magma_r')
+                # plt.savefig(f'debug_pics/debug_depth_{view}.png')
+                # plt.imshow(vis_mask)
+                # plt.savefig(f'debug_pics/debug_mask_{view}.png')
+
+                # # pcd = o3d.geometry.PointCloud()
+                # # pcd.points = o3d.utility.Vector3dVector(filter_points.copy() / 100.0)
+                # # vis = o3d.visualization.Visualizer()
+                # # vis.create_window()
+                # # vis.add_geometry(pcd)
+                # # vis.update_geometry(pcd)
+                # # vis.poll_events()
+                # # vis.update_renderer()
+                # # vis.capture_screen_image('debug_points.png')
+                # # vis.destroy_window()
+                
+                # # o3d.visualization.draw_geometries([pcd])              
+
+            for b in range(batch_num):
+                total_points[b] = torch.cat(total_points[b],dim=0)
+
+            ###### get in the pointcloud input mode
+
+            # total_points = np.concatenate(total_points, axis=0)
+            # test_points = total_points[0].detach().cpu().numpy()
+
+            # with open(f'points_debug/point_total.pkl','wb') as dfile:
+            #     pickle.dump(test_points,dfile)
             import pdb; pdb.set_trace()
 
                     

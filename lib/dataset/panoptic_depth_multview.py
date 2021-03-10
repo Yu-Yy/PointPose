@@ -51,6 +51,7 @@ class Panoptic_Depth(Dataset):
         self.heatmap_size = self.heatmap_size.astype(np.int16)
         self.num_joints = cfg.NETWORK.NUM_JOINTS
         self.sigma = cfg.NETWORK.SIGMA
+        self.max_people = cfg.DATASET.MAX_PEOPLE_NUM
         self.single_size = 512*424
         if is_train:
             self.scene_list = GEN_LIST
@@ -115,14 +116,22 @@ class Panoptic_Depth(Dataset):
             try:
                 kp_row_data = json.load(kp)
             except:
-                return None,None,None,None,None,None,None,None,None
+                return None,None,None,None,None,None,None,None,None, None
 
         univ_time = kp_row_data['univTime']  
         kp3d_body_data = kp_row_data['bodies'] 
         num_people = len(kp3d_body_data)
         if num_people == 0:
-            return None,None,None,None,None,None,None,None,None
-
+            return None,None,None,None,None,None,None,None,None, None
+        # get the 3d
+        output_pose_3d = torch.zeros(self.max_people, self.num_joints, 4)
+        pose_3d = []
+        for n in range(num_people):
+            pose3d = np.array(kp3d_body_data[n]['joints19']).reshape((-1, 4))
+            pose_3d.append(np.expand_dims(pose3d,axis=0))
+        pose_3d = np.concatenate(pose_3d,axis=0) # (N, 19, 4)
+        output_pose_3d[:num_people,...] = torch.from_numpy(pose_3d)
+            
         # process in views
         output_img = []
         output_depth = []
@@ -138,13 +147,13 @@ class Panoptic_Depth(Dataset):
             match_synctable_rgb = np.array(self.ksync_data[scene_index]['kinect']['color'][f'KINECTNODE{int(view)}']['univ_time']) - 6.25
             target_frame_rgb_idx = np.argmin(abs(match_synctable_rgb - univ_time),axis=0)
             if abs(self.ksync_data[scene_index]['kinect']['color'][f'KINECTNODE{int(view)}']['univ_time'][target_frame_rgb_idx] - 6.25 - univ_time) > 30:
-                return None, None, None, None, None, None, None, None, None # not yet
+                return None, None, None, None, None, None, None, None, None, None # not yet
             match_synctable_depth = np.array(self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{int(view)}']['univ_time'])
             target_frame_depth_idx = np.argmin(abs(match_synctable_depth - univ_time),axis=0)
             if abs(self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{int(view)}']['univ_time'][target_frame_depth_idx] - univ_time) > 17:
-                return None, None, None, None, None, None, None, None, None # not yet
+                return None, None, None, None, None, None, None, None, None, None # not yet
             if abs(self.ksync_data[scene_index]['kinect']['color'][f'KINECTNODE{int(view)}']['univ_time'][target_frame_rgb_idx] - self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{int(view)}']['univ_time'][target_frame_depth_idx]) > 6.5:
-                return None, None, None, None, None, None, None, None, None # not yet
+                return None, None, None, None, None, None, None, None, None, None # not yet
 
             # get the trans matrix
             panoptic_calibData = self.calib_data[scene_index]['cameras'][view + 509] # from 510 to 519
@@ -248,12 +257,12 @@ class Panoptic_Depth(Dataset):
             except:
                 # import pdb; pdb.set_trace()
                 #output_valid_mask.append(torch.ones(1,int(self.crop_size[1]),int(self.crop_size[0]))) # all one for mask
-                return None, None, None, None, None, None, None, None, None # 舍弃问题mask
+                return None, None, None, None, None, None, None, None, None, None # 舍弃问题mask
 
             # process the heatmap
             joints = []
             joints_vis = []
-            for n in range(num_people):
+            for n in range(num_people): # TODO: using batch process for accelerating
                 pose3d = np.array(kp3d_body_data[n]['joints19']).reshape((-1, 4))
                 anno_vis = pose3d[:, -1] > 0.1
                 pose3d_proc = pose3d[...,:3]
@@ -297,7 +306,7 @@ class Panoptic_Depth(Dataset):
         output_M = torch.cat(output_M, dim=0)
         output_diff = torch.cat(output_diff,dim=0)
             
-        return output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff
+        return output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_pose_3d
 
     def __affine_transform__(self, pt, t):
         new_pt = np.array([pt[0], pt[1], 1.]).T
