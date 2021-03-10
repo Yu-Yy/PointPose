@@ -55,6 +55,7 @@ class get_3d_points(nn.Module):
         pred_depth = pred_depth.squeeze(1)
         _,C,_,_ = feature_input.shape
         B,H,W = pred_depth.shape
+        num_joints = len(filter_mask)
         K_matrix = K_matrix.clone().detach()
         M_matrix = M_matrix.clone().detach()
         diff = diff.clone().detach()
@@ -100,21 +101,25 @@ class get_3d_points(nn.Module):
         # point_3d = point_3D[:3,:].transpose()
         point_panoptic = torch.bmm(trans_matrix, point_3D)
         point_panoptic = point_panoptic[:,:3,:].permute([0,2,1])
-        mask_filt = filter_mask.reshape(B,-1,1)
+        
         # batch_points = []
         feature_input = feature_input.reshape(B,C,-1)
         feature_input = feature_input.permute([0,2,1])
         # import pdb; pdb.set_trace()
-        for b in range(B):
-            batch_point_3d = point_panoptic[b]
-            batch_feature = feature_input[b]
-            i_idx,j_idx = torch.where(mask_filt[b] == 1)
-            filter_point_b = batch_point_3d[i_idx]
-            filter_feature_b = batch_feature[i_idx]
-            # combine the feature part
-            filter_pc = torch.cat([filter_point_b,filter_feature_b],dim = -1)
-            total_points[b].append(filter_pc)
-            # batch_points.append(filter_point_b.unsqueeze(0))
+
+        for hm_idx in range(num_joints):
+            mask_filt = filter_mask[hm_idx].reshape(B,-1,1)
+            for b in range(B):
+                batch_point_3d = point_panoptic[b]
+                batch_feature = feature_input[b]
+                i_idx,j_idx = torch.where(mask_filt[b] == 1)
+                filter_point_b = batch_point_3d[i_idx]
+                filter_feature_b = batch_feature[i_idx]
+                # combine the feature part
+                filter_pc = torch.cat([filter_point_b,filter_feature_b],dim = -1)
+                total_points[hm_idx][b].append(filter_pc)
+                # batch_points.append(filter_point_b.unsqueeze(0))
+
         return total_points
 
 

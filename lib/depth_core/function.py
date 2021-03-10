@@ -267,6 +267,160 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
     logger.info(msg)
     return metrics
 
+def train_points3d(config, model, loader, output_dir, epoch=0, vali=False, device=torch.device('cuda')):
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses = AverageMeter()
+    losses_depth = AverageMeter()
+    losses_hm = AverageMeter()
+    losses_mask = AverageMeter()
+    losses_fore_depth = AverageMeter()
+
+    metrics_c = RunningAverageDict()
+    criterion_hm = PerJointMSELoss().cuda()
+    criterion_dense = SILogLoss().cuda()
+    criterion_chamfer = BinsChamferLoss().cuda()
+    criterion_mask = CrossEntropyMaskLoss().cuda()
+    criterion_fore_depth = foreground_depth_loss().cuda()
+    generator_gradient = grad_generation().cuda()
+    erode = erode_generation().cuda()
+    orig_w = 1920
+    orig_h = 1080
+    points_extractor = get_3d_points(orig_W=orig_w, orig_H =orig_h).cuda()
+
+    
+    model.train()
+    end = time.time()
+    for i, batch in enumerate(loader):
+        if len(batch) == 0:
+            continue
+        data_time.update(time.time() - end)
+        output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
+        batch_num = output_img.shape[0]
+        view_num = output_img.shape[1]
+        number_joints = config.NETWORK.NUM_JOINTS
+        # process in multiple view form
+        total_points = [[[] for _ in range(batch_num)] for _ in range(number_joints)]
+        for view in range(view_num): 
+            image = output_img[:,view,...]
+            depth = output_depth[:,view,...]
+            mask_gt = output_valid_mask[:,view,...]
+            hm_gt = output_hm[:,view,...]
+            wt_gt = output_weights[:,view,...]
+            trans_matrix = output_trans[:,view,...]
+            # trans_matrix = trans_matrix.numpy()
+            K_matrix = output_K[:,view,...]
+            # K_matrix = K_matrix.numpy()
+            M_matrix = output_M[:,view,...]
+            # M_matrix = M_matrix.numpy()
+            diff = output_diff[:,view,...]
+            # diff = diff.numpy()
+
+            image = image.to(device)
+            depth = depth.to(device)
+            mask_gt = mask_gt.to(device)
+            hm_gt = hm_gt.to(device)
+            wt_gt = wt_gt.to(device)
+            trans_matrix = trans_matrix.to(device)
+            K_matrix = K_matrix.to(device)
+            M_matrix = M_matrix.to(device)
+            diff = diff.to(device)
+            
+
+
+            bin_edges, pred, heatmap, mask_prob, feature_out = model(image)
+
+            # vis_mask = (mask_prob > 0.5).astype(np.int)
+
+            depth_mask = depth > config.DATASET.MIN_DEPTH
+            attention_mask = depth_mask * mask_gt
+            
+            
+            l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True)
+            losses_depth.update(l_dense.item())
+            
+            l_fore_depth = criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
+            print(f'The avg loss is {l_fore_depth.item()}')
+            losses_fore_depth.update(l_fore_depth.item())
+                    
+            pred_process = pred.clone() # for projection
+
+
+            pred = pred.detach().cpu().numpy()
+            pred[pred < config.DATASET.MIN_DEPTH] = config.DATASET.MIN_DEPTH
+            pred[pred > config.DATASET.MAX_DEPTH] = config.DATASET.MAX_DEPTH
+            pred[np.isinf(pred)] = config.DATASET.MAX_DEPTH
+            pred[np.isnan(pred)] = config.DATASET.MIN_DEPTH
+
+            depth_gt = depth.cpu().numpy()
+            valid_mask = np.logical_and(depth_gt > config.DATASET.MIN_DEPTH, depth_gt < config.DATASET.MAX_DEPTH)
+
+            # 1. get the mask to do the filtering as "number"
+            fitted_mask = F.interpolate(mask_prob, scale_factor=0.5)
+            # filter mask
+            filter_gradient_mask = generator_gradient(pred_process.clone())
+
+            # convolution is 2*P = F_size -1 for same 
+            kernel = torch.ones(5,5).to(device)
+            mask = (fitted_mask > 0.5).int()
+            # erosion mask
+            erode_mask = erode(mask,kernel.detach()) # erode error
+
+            filter_mask = []
+
+            for hm_idx in range(number_joints):
+                hm_sampling = heatmap[:,hm_idx:hm_idx + 1,:,:]
+                hm_max = torch.max(hm_sampling)
+                choice_generator = 2 * hm_max * torch.rand(hm_sampling.shape).to(device)
+                hm_sampling_mask = hm_sampling > choice_generator
+                filter_mask.append(erode_mask * filter_gradient_mask * hm_sampling_mask)
+
+        
+            total_points = points_extractor(pred_process, filter_mask, K_matrix, M_matrix,diff, trans_matrix, total_points, feature_out.clone()) # 
+
+
+            
+            
+        for hm_idx in range(number_joints):
+            for b in range(batch_num):
+                total_points[hm_idx][b] = torch.cat(total_points[hm_idx][b],dim=0)
+        # existing the 0 joints sampling
+        ###### get in the pointcloud input mode
+        for hm_idx in range(number_joints):
+            batch_total_points = total_points[hm_idx]
+            max_points_num = 0
+            for b in range(batch_num):
+                s_batch_points = batch_total_points[b]
+                s_num = s_batch_points.shape[0]
+                if s_num >= max_points_num:
+                    max_points_num = s_num
+            # assure the max_points_num
+
+            for b in range(batch_num):
+                s_batch_points = batch_total_points[b]
+                s_num = s_batch_points.shape[0]
+                if s_num == max_points_num:
+                    total_points[hm_idx][b] = s_batch_points.unsqueeze(0)
+                    continue
+                offset = max_points_num - s_num
+                fill_indx = torch.randint(s_num, (offset, ))
+                fill_tensor = s_batch_points[fill_indx,:] # 索引可能不够了
+                new_tensor = torch.cat([s_batch_points,fill_tensor],dim=0)
+                total_points[hm_idx][b] = new_tensor.unsqueeze(0)
+
+            total_points[hm_idx] = torch.cat(total_points[hm_idx],dim=0)
+
+        # send the result into the votenet
+        import pdb; pdb.set_trace()
+
+                    
+    return None
+
+
+
+
+
+
 def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, device=torch.device('cuda')): # input the multiview data
     batch_time = AverageMeter()
     data_time = AverageMeter()
@@ -300,8 +454,9 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
             output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
             batch_num = output_img.shape[0]
             view_num = output_img.shape[1]
+            number_joints = config.NETWORK.NUM_JOINTS
             # process in multiple view form
-            total_points = [[] for _ in range(batch_num)]
+            total_points = [[[] for _ in range(batch_num)] for _ in range(number_joints)]
             for view in range(view_num): 
                 image = output_img[:,view,...]
                 depth = output_depth[:,view,...]
@@ -341,7 +496,7 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 losses_depth.update(l_dense.item())
                 
                 l_fore_depth = criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
-                # print(f'The avg loss is {l_fore_depth.item()}')
+                print(f'The avg loss is {l_fore_depth.item()}')
                 losses_fore_depth.update(l_fore_depth.item())
                         
                 pred_process = pred.clone() # for projection
@@ -367,14 +522,24 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 # erosion mask
                 erode_mask = erode(mask,kernel.detach()) # erode error
                 # import pdb; pdb.set_trace()
-                hm_sampling,_ = torch.max(heatmap, dim = 1, keepdims=True)
-                hm_max = torch.max(hm_sampling)
-                # get one sampling mask
-                choice_generator = 2 * hm_max * torch.rand(hm_sampling.shape).to(device)
-                hm_sampling_mask = hm_sampling > choice_generator
-                # import pdb; pdb.set_trace()
+                filter_mask = []
 
-                filter_mask = erode_mask * filter_gradient_mask * hm_sampling_mask
+                for hm_idx in range(number_joints):
+                    hm_sampling = heatmap[:,hm_idx:hm_idx + 1,:,:]
+                    hm_max = torch.max(hm_sampling)
+                    choice_generator = 2 * hm_max * torch.rand(hm_sampling.shape).to(device)
+                    hm_sampling_mask = hm_sampling > choice_generator
+                    filter_mask.append(erode_mask * filter_gradient_mask * hm_sampling_mask)
+
+                ## for global heatmap sampling
+                # hm_sampling,_ = torch.max(heatmap, dim = 1, keepdims=True)
+                # hm_max = torch.max(hm_sampling)
+                # # get one sampling mask
+                # choice_generator = 2 * hm_max * torch.rand(hm_sampling.shape).to(device)
+                # hm_sampling_mask = hm_sampling > choice_generator
+                # filter_mask = erode_mask * filter_gradient_mask * hm_sampling_mask
+
+
                 # if all the mask is zero, then it is no mean to sample
                 # import pdb; pdb.set_trace()
                 # unproject the depth prediction (pred_process)
@@ -456,12 +621,39 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 # # vis.capture_screen_image('debug_points.png')
                 # # vis.destroy_window()
                 
-                # # o3d.visualization.draw_geometries([pcd])              
-
-            for b in range(batch_num):
-                total_points[b] = torch.cat(total_points[b],dim=0)
-
+                # # o3d.visualization.draw_geometries([pcd]) 
+             
+            for hm_idx in range(number_joints):
+                for b in range(batch_num):
+                    total_points[hm_idx][b] = torch.cat(total_points[hm_idx][b],dim=0)
+            # existing the 0 joints sampling
             ###### get in the pointcloud input mode
+            for hm_idx in range(number_joints):
+                batch_total_points = total_points[hm_idx]
+                max_points_num = 0
+                for b in range(batch_num):
+                    s_batch_points = batch_total_points[b]
+                    s_num = s_batch_points.shape[0]
+                    if s_num >= max_points_num:
+                        max_points_num = s_num
+                # assure the max_points_num
+                # import pdb; pdb.set_trace()
+                for b in range(batch_num):
+                    s_batch_points = batch_total_points[b]
+                    s_num = s_batch_points.shape[0]
+                    if s_num == max_points_num:
+                        total_points[hm_idx][b] = s_batch_points.unsqueeze(0)
+                        continue
+                    offset = max_points_num - s_num
+                    fill_indx = torch.randint(s_num, (offset, ))
+                    fill_tensor = s_batch_points[fill_indx,:] # 索引可能不够了
+                    new_tensor = torch.cat([s_batch_points,fill_tensor],dim=0)
+                    total_points[hm_idx][b] = new_tensor.unsqueeze(0)
+                # import pdb; pdb.set_trace()
+                total_points[hm_idx] = torch.cat(total_points[hm_idx],dim=0)
+
+                # ad
+
 
             # total_points = np.concatenate(total_points, axis=0)
             # test_points = total_points[0].detach().cpu().numpy()
