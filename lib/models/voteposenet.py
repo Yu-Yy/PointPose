@@ -13,10 +13,10 @@ import torch.nn as nn
 import numpy as np
 import sys
 import os
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)
-sys.path.append(BASE_DIR)
-from votepose_utils import VotePoseBackbone, VotePoseVoting, VotePoseProposal
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# ROOT_DIR = os.path.dirname(BASE_DIR)
+# sys.path.append(BASE_DIR)
+from models.votepose_utils import VotePoseBackbone, VotePoseVoting, VotePoseProposal, get_loss
 
 #from dump_helper import dump_results
 #from loss_helper import get_loss
@@ -24,7 +24,7 @@ import time
 
 class VotePoseNet(nn.Module):
     r"""
-        A deep neural network for 3D object detection with end-to-end optimizable hough voting.
+        A deep neural network for 3D object detection with end-to-end optimizable hough voting.  # votenet 
 
         Parameters
         ----------
@@ -52,23 +52,22 @@ class VotePoseNet(nn.Module):
         self.input_feature_dim = input_feature_dim
         self.num_proposal = num_proposal
         self.vote_factor = vote_factor
-        self.sampling=sampling
+        # self.sampling=sampling # using ?
 
         # Backbone point feature learning
         self.backbone_net = VotePoseBackbone(input_feature_dim=self.input_feature_dim)
 
         # Hough voting
-        self.vgen = VotePoseVoting(self.vote_factor, 128)
+        self.vgen = VotePoseVoting(self.vote_factor, 128) # 128
 
         # Vote aggregation and detection
-        self.pnet = VotePoseProposal(num_proposal, sampling, seed_feat_dim=128)
+        self.pnet = VotePoseProposal(num_proposal, sampling, seed_feat_dim=128) # 128 dim output
 
     def forward(self, inputs):
         """ Forward pass of the network
 
         Args:
-            inputs: dict
-                {point_clouds}
+            inputs: tensor.float
 
                 point_clouds: Variable(torch.cuda.FloatTensor)
                     (B, N, 3 + input_channels) tensor
@@ -79,9 +78,9 @@ class VotePoseNet(nn.Module):
             end_points: dict
         """
         end_points = {}
-        batch_size = inputs['point_clouds'].shape[0]
+        batch_size = inputs.shape[0]
 
-        end_points = self.backbone_net(inputs['point_clouds'], end_points)
+        end_points = self.backbone_net(inputs.float(), end_points) # changed into float tensor
                 
         # --------- HOUGH VOTING ---------
         xyz = end_points['fp1_xyz']
@@ -90,10 +89,10 @@ class VotePoseNet(nn.Module):
         end_points['seed_xyz'] = xyz
         end_points['seed_features'] = features
         
-        xyz, features = self.vgen(xyz, features)
+        xyz, features = self.vgen(xyz, features)  
         features_norm = torch.norm(features, p=2, dim=1)
         features = features.div(features_norm.unsqueeze(1))
-        end_points['vote_xyz'] = xyz
+        end_points['vote_xyz'] = xyz # one suprervise 
         end_points['vote_features'] = features
         #print(features.shape)
         end_points = self.pnet(xyz, features, end_points)
@@ -102,7 +101,7 @@ class VotePoseNet(nn.Module):
 
 
 if __name__=='__main__':
-    sys.path.append(os.path.join(ROOT_DIR, 'sunrgbd'))
+    # sys.path.append(os.path.join(ROOT_DIR, 'sunrgbd'))
     #from sunrgbd_detection_dataset import SunrgbdDetectionVotesDataset, DC
     #from loss_helper import get_loss
 
@@ -118,24 +117,35 @@ if __name__=='__main__':
         inputs = {'point_clouds': torch.from_numpy(sample['point_clouds']).unsqueeze(0).cuda()}
     except:
         print('Dataset has not been prepared. Use a random sample.')
-        inputs = {'point_clouds': torch.rand((2500,35)).unsqueeze(0).cuda()}
+        inputs = torch.rand((19,8,3800,35)).cuda()  #.unsqueeze(0)
     t = time.time()
     for i in range(19):
-        end_points = model(inputs)
-    print(time.time() - t)
+        end_points = model(inputs[i])
+    # import pdb; pdb.set_trace()
+        gt_points = torch.rand((8,4,3)).cuda()
+        loss, end_points = get_loss(end_points, gt_points)
+    # end_points = model(inputs)
+    batch_time = time.time() - t
+    print(f'{batch_time}s')
+    speed = inputs.shape[1] / batch_time
+    print(f'{speed} samp/s')
     
     '''
     for key in end_points:
         print(key, end_points[key])
     '''
-    try:
-        # Compute loss
-        for key in sample:
-            end_points[key] = torch.from_numpy(sample[key]).unsqueeze(0).cuda()
-        loss, end_points = get_loss(end_points, DC)
-        print('loss', loss)
-        end_points['point_clouds'] = inputs['point_clouds']
-        end_points['pred_mask'] = np.ones((1,128))
-        dump_results(end_points, 'tmp', DC)
-    except:
-        print('Dataset has not been prepared. Skip loss and dump.')
+    # try:
+    #     # Compute loss
+    #     for key in sample:
+    #         end_points[key] = torch.from_numpy(sample[key]).unsqueeze(0).cuda()
+    #     loss, end_points = get_loss(end_points, DC)
+    #     print('loss', loss)
+    #     end_points['point_clouds'] = inputs['point_clouds']
+    #     end_points['pred_mask'] = np.ones((1,128))
+    #     # dump_results(end_points, 'tmp', DC)
+    # except:
+
+    #     print('Dataset has not been prepared. Skip loss and dump.')
+
+    # testing loss 
+    

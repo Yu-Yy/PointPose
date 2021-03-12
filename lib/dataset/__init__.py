@@ -13,3 +13,4 @@ from dataset.campus_synthetic import CampusSynthetic as campus_synthetic
 from dataset.shelf import Shelf as shelf
 from dataset.campus import Campus as campus
 from dataset.panoptic_depth import Panoptic_Depth as panoptic_depth
+from dataset.panoptic_depth_multview import Panoptic_Depth_Mul as panoptic_depth_multview

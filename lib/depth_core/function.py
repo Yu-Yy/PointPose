@@ -89,6 +89,7 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
 
         loss = loss_depth + 50 * loss_hm + loss_mask * 5
         losses.update(loss.item())
+
         optimizer.zero_grad()
         loss.backward() # add loss 3d 
         optimizer.step()
@@ -267,10 +268,10 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
     logger.info(msg)
     return metrics
 
-def train_points3d(config, model, loader, output_dir, epoch=0, vali=False, device=torch.device('cuda')):
+def train_points3d_bak(config, model, optimizer, loader, epoch, output_dir, writer_dict, device=torch.device('cuda'), dtype=torch.float):
     batch_time = AverageMeter()
     data_time = AverageMeter()
-    losses = AverageMeter()
+    losses_2d = AverageMeter()
     losses_depth = AverageMeter()
     losses_hm = AverageMeter()
     losses_mask = AverageMeter()
@@ -279,11 +280,13 @@ def train_points3d(config, model, loader, output_dir, epoch=0, vali=False, devic
     metrics_c = RunningAverageDict()
     criterion_hm = PerJointMSELoss().cuda()
     criterion_dense = SILogLoss().cuda()
+    criterion_dense_attention = SILogLoss().cuda()
     criterion_chamfer = BinsChamferLoss().cuda()
     criterion_mask = CrossEntropyMaskLoss().cuda()
     criterion_fore_depth = foreground_depth_loss().cuda()
     generator_gradient = grad_generation().cuda()
     erode = erode_generation().cuda()
+
     orig_w = 1920
     orig_h = 1080
     points_extractor = get_3d_points(orig_W=orig_w, orig_H =orig_h).cuda()
@@ -300,6 +303,8 @@ def train_points3d(config, model, loader, output_dir, epoch=0, vali=False, devic
         view_num = output_img.shape[1]
         number_joints = config.NETWORK.NUM_JOINTS
         # process in multiple view form
+        # preset the loss
+        loss = torch.tensor(0).to(device)
         total_points = [[[] for _ in range(batch_num)] for _ in range(number_joints)]
         for view in range(view_num): 
             image = output_img[:,view,...]
@@ -330,30 +335,42 @@ def train_points3d(config, model, loader, output_dir, epoch=0, vali=False, devic
 
             bin_edges, pred, heatmap, mask_prob, feature_out = model(image)
 
-            # vis_mask = (mask_prob > 0.5).astype(np.int)
-
+            # depth loss
             depth_mask = depth > config.DATASET.MIN_DEPTH
-            attention_mask = depth_mask * mask_gt
-            
-            
+            attention_mask = depth_mask * mask_gt   
             l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True)
-            losses_depth.update(l_dense.item())
-            
-            l_fore_depth = criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
-            print(f'The avg loss is {l_fore_depth.item()}')
+            l_dense_attention = criterion_dense_attention(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
+            l_chamfer = criterion_chamfer(bin_edges, depth.float())
+
+            l_fore_depth =criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
             losses_fore_depth.update(l_fore_depth.item())
-                    
+            loss_depth = l_dense + 0.1 * l_chamfer +  l_dense_attention # pay more attention to the  #+ 2e-3 * l_grad # pay attention to the foreground and control the grad
+            losses_depth.update(loss_depth.item())
+            
+            # hm loss
+            loss_hm = criterion_hm(heatmap, hm_gt, mask_gt ,True, wt_gt)
+            losses_hm.update(loss_hm.item() * 50)
+            
+             # mask loss
+            loss_mask = criterion_mask(mask_prob, mask_gt.long())
+            losses_mask.update(loss_mask.item() * 5)
+
+            loss_2d = loss_depth + 50 * loss_hm + loss_mask * 5   
+            losses_2d.update(loss_2d.item())
+
+            # 2d network can be trained by the loss loss_2d
+            # the loss can be added to the backward update
             pred_process = pred.clone() # for projection
 
 
-            pred = pred.detach().cpu().numpy()
-            pred[pred < config.DATASET.MIN_DEPTH] = config.DATASET.MIN_DEPTH
-            pred[pred > config.DATASET.MAX_DEPTH] = config.DATASET.MAX_DEPTH
-            pred[np.isinf(pred)] = config.DATASET.MAX_DEPTH
-            pred[np.isnan(pred)] = config.DATASET.MIN_DEPTH
+            # pred = pred.detach().cpu().numpy()
+            # pred[pred < config.DATASET.MIN_DEPTH] = config.DATASET.MIN_DEPTH
+            # pred[pred > config.DATASET.MAX_DEPTH] = config.DATASET.MAX_DEPTH
+            # pred[np.isinf(pred)] = config.DATASET.MAX_DEPTH
+            # pred[np.isnan(pred)] = config.DATASET.MIN_DEPTH
 
-            depth_gt = depth.cpu().numpy()
-            valid_mask = np.logical_and(depth_gt > config.DATASET.MIN_DEPTH, depth_gt < config.DATASET.MAX_DEPTH)
+            # depth_gt = depth.cpu().numpy()
+            # valid_mask = np.logical_and(depth_gt > config.DATASET.MIN_DEPTH, depth_gt < config.DATASET.MAX_DEPTH)
 
             # 1. get the mask to do the filtering as "number"
             fitted_mask = F.interpolate(mask_prob, scale_factor=0.5)
@@ -411,10 +428,67 @@ def train_points3d(config, model, loader, output_dir, epoch=0, vali=False, devic
             total_points[hm_idx] = torch.cat(total_points[hm_idx],dim=0)
 
         # send the result into the votenet
+
         import pdb; pdb.set_trace()
 
+
                     
-    return None
+    # return None
+
+def train_points3d(config, model, optimizer, loader, epoch, output_dir, writer_dict, device=torch.device('cuda'), dtype=torch.float):
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses_2d = AverageMeter()
+    losses_3d = AverageMeter()
+    model.train()
+
+    end = time.time()
+
+    for i, batch in enumerate(loader):
+        if len(batch) == 0:
+            continue
+        data_time.update(time.time() - end)
+        output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
+        loss_3d, loss_2d, predicted_3dpose = model(output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose)
+        if torch.any(torch.isnan(loss_2d)): 
+            continue
+        # import pdb; pdb.set_trace()
+        loss_2d = loss_2d.mean()
+        loss_3d = loss_3d.mean()
+
+        losses_2d.update(loss_2d.item())
+        losses_3d.update(loss_3d.item())
+
+        loss_total = loss_3d  #loss_2d + 
+
+        optimizer.zero_grad()
+        loss_total.backward() # add loss 3d 
+        optimizer.step()
+        # print('backward OK!')
+
+        data_time.update(time.time() - end)
+        batch_time.update(time.time() - end)
+        end = time.time()
+
+        if i % config.PRINT_FREQ == 0:
+            gpu_memory_usage = torch.cuda.memory_allocated(0)
+            msg = 'Train: [{0}/{1}]\t' \
+                    'Time: {batch_time.val:.3f}s ({batch_time.avg:.3f}s)\t' \
+                    'Speed: {speed:.1f} samples/s\t' \
+                    'Data: {data_time.val:.3f}s ({data_time.avg:.3f}s)\t' \
+                    'loss_3d: {losses_3d.val:.3f} ({losses_3d.avg:.3f})\t' \
+                    'loss_2d: {losses_2d.val:.3f} ({losses_2d.avg:.3f})\t' \
+                    'Memory {memory:.1f}'.format(
+                    i, len(loader), batch_time=batch_time,
+                    speed=output_img.size(0) / batch_time.val,
+                    data_time=data_time, losses_2d = losses_2d, losses_3d = losses_3d, memory=gpu_memory_usage)
+            
+            logger.info(msg)
+
+
+
+
+
 
 
 

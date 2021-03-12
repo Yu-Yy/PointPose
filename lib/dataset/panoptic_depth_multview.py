@@ -35,7 +35,7 @@ TEST_LIST = [
     "160906_band3",
 ]
 
-class Panoptic_Depth(Dataset):
+class Panoptic_Depth_Mul(Dataset):
     def __init__(self, cfg, image_folder, keypoint_folder, view_set,is_train = True, transform = None): # TODO add keypoint folder  cfg
         self.view_set = view_set
         self.view_num = len(self.view_set)
@@ -124,13 +124,19 @@ class Panoptic_Depth(Dataset):
         if num_people == 0:
             return None,None,None,None,None,None,None,None,None, None
         # get the 3d
-        output_pose_3d = torch.zeros(self.max_people, self.num_joints, 4)
+        # output_pose_3d = torch.zeros(self.max_people, self.num_joints, 4)
         pose_3d = []
         for n in range(num_people):
             pose3d = np.array(kp3d_body_data[n]['joints19']).reshape((-1, 4))
             pose_3d.append(np.expand_dims(pose3d,axis=0))
         pose_3d = np.concatenate(pose_3d,axis=0) # (N, 19, 4)
-        output_pose_3d[:num_people,...] = torch.from_numpy(pose_3d)
+        pose_3d = torch.from_numpy(pose_3d)
+        offset = self.max_people - num_people
+        fill_indx = torch.randint(num_people, (offset, ))
+        fill_tensor = pose_3d[fill_indx,:]
+        output_pose_3d = torch.cat([pose_3d,fill_tensor],dim=0) # generate the gt pose replicated
+
+        # output_pose_3d[:num_people,...] = torch.from_numpy(pose_3d)
             
         # process in views
         output_img = []

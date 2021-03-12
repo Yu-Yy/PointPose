@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from models import pose_higher_hrnet
 from models.depth_header import DepthEstimation
 from models.PM_header import PoseMaskEstimation
+from models.voteposenet import VotePoseNet
 
 
 class HrnetAdaptiveBins(nn.Module):
@@ -26,6 +27,8 @@ class HrnetAdaptiveBins(nn.Module):
         bin_edges, pred = self.depth_header(hrnet_out)
         # mask and poseH output
         heatmap, mask_prob = self.PM_header(hrnet_out)
+
+        # calculate the loss and get into the votenet 
 
         return bin_edges, pred, heatmap, mask_prob, hrnet_out
 
