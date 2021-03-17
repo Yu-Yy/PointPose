@@ -18,22 +18,29 @@ import torchvision.transforms as transforms
 from functools import reduce
 import matplotlib.pyplot as plt 
 
-GEN_LIST = [
-"160226_haggling1",
-"160906_ian1",
-"160906_ian2",
-"160906_band1",
-"160906_band2",
-"160906_pizza1",
-"160422_haggling1",
-"160906_ian5",
+# GEN_LIST = [
+# "160226_haggling1",
+# "160906_ian1",
+# "160906_ian2",
+# "160906_band1",
+# "160906_band2",
+# "160906_pizza1",
+# "160422_haggling1",
+# "160906_ian5",
+# ]
+
+# train the dataset in the 2D's test set
+GEN_LIST = ["161202_haggling1",
+            "160906_ian3", 
 ]
 
 TEST_LIST = [
-    "161202_haggling1",
-    "160906_ian3",
+    # "161202_haggling1",
+    # "160906_ian3",
     "160906_band3",
 ]
+
+
 
 class Panoptic_Depth_Mul(Dataset):
     def __init__(self, cfg, image_folder, keypoint_folder, view_set,is_train = True, transform = None): # TODO add keypoint folder  cfg

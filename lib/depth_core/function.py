@@ -21,6 +21,7 @@ from depth_core.utils_depth import RunningAverage, compute_errors, RunningAverag
 
 # from models.hrnet_adabins import HrnetAdaptiveBins
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import open3d as o3d
 import cv2
 
@@ -435,11 +436,14 @@ def train_points3d_bak(config, model, optimizer, loader, epoch, output_dir, writ
                     
     # return None
 
-def train_points3d(config, model, optimizer, loader, epoch, output_dir, writer_dict, device=torch.device('cuda'), dtype=torch.float):
+def train_points3d(config, model, optimizer, loader, epoch, output_dir, writer_dict, device=torch.device('cuda'), dtype=torch.float, logger=logger):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses_2d = AverageMeter()
     losses_3d = AverageMeter()
+    losses_vote = AverageMeter()
+    losses_objective = AverageMeter()
+    losses_distance = AverageMeter()
     model.train()
 
     end = time.time()
@@ -449,13 +453,20 @@ def train_points3d(config, model, optimizer, loader, epoch, output_dir, writer_d
             continue
         data_time.update(time.time() - end)
         output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
-        loss_3d, loss_2d, predicted_3dpose = model(output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose)
+        loss_vote, loss_objective, loss_distance,loss_2d, predicted_3dpose = model(output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose)
         if torch.any(torch.isnan(loss_2d)): 
             continue
         # import pdb; pdb.set_trace()
+        loss_vote = loss_vote.mean()
+        loss_objective = loss_objective.mean()
+        loss_distance = loss_distance.mean()
         loss_2d = loss_2d.mean()
-        loss_3d = loss_3d.mean()
+        # loss_3d = loss_3d.mean()
+        loss_3d = loss_vote + loss_objective + loss_distance
 
+        losses_vote.update(loss_vote.item())
+        losses_objective.update(loss_objective.item())
+        losses_distance.update(loss_distance.item())
         losses_2d.update(loss_2d.item())
         losses_3d.update(loss_3d.item())
 
@@ -464,7 +475,6 @@ def train_points3d(config, model, optimizer, loader, epoch, output_dir, writer_d
         optimizer.zero_grad()
         loss_total.backward() # add loss 3d 
         optimizer.step()
-        # print('backward OK!')
 
         data_time.update(time.time() - end)
         batch_time.update(time.time() - end)
@@ -472,21 +482,171 @@ def train_points3d(config, model, optimizer, loader, epoch, output_dir, writer_d
 
         if i % config.PRINT_FREQ == 0:
             gpu_memory_usage = torch.cuda.memory_allocated(0)
-            msg = 'Train: [{0}/{1}]\t' \
+            msg =   'Epoch: [{0}][{1}/{2}]\t' \
                     'Time: {batch_time.val:.3f}s ({batch_time.avg:.3f}s)\t' \
                     'Speed: {speed:.1f} samples/s\t' \
                     'Data: {data_time.val:.3f}s ({data_time.avg:.3f}s)\t' \
+                    'loss_vote {losses_vote.val:.3f} ({losses_vote.avg:.3f})\t' \
+                    'loss_objective {losses_objective.val:.3f} ({losses_objective.avg:.3f})\t' \
+                    'loss_distance {losses_distance.val:.3f} ({losses_distance.avg:.3f})\t' \
                     'loss_3d: {losses_3d.val:.3f} ({losses_3d.avg:.3f})\t' \
                     'loss_2d: {losses_2d.val:.3f} ({losses_2d.avg:.3f})\t' \
                     'Memory {memory:.1f}'.format(
-                    i, len(loader), batch_time=batch_time,
+                    epoch, i, len(loader), batch_time=batch_time,
                     speed=output_img.size(0) / batch_time.val,
-                    data_time=data_time, losses_2d = losses_2d, losses_3d = losses_3d, memory=gpu_memory_usage)
+                    data_time=data_time, losses_2d = losses_2d, 
+                    losses_3d = losses_3d,losses_vote= losses_vote, 
+                    losses_objective = losses_objective,losses_distance = losses_distance,
+                    memory=gpu_memory_usage)
             
             logger.info(msg)
 
+            writer = writer_dict['writer']
+            global_steps = writer_dict['train_global_steps']
+            writer.add_scalar('train_2d', losses_2d.val, global_steps)
+            writer.add_scalar('train_3d', losses_2d.val, global_steps)
+            writer.add_scalar('train_vote', losses_vote.val, global_steps)
+            writer.add_scalar('train_object', losses_objective.val, global_steps)
+            writer.add_scalar('train_dist', losses_distance.val, global_steps)
+            # writer.add_scalar('train_loss_hm', losses_hm.val, global_steps)
+            # writer.add_scalar('train_loss_depth', losses_depth.val, global_steps)
+            writer_dict['train_global_steps'] = global_steps + 1
+            if i % 100 == 0:
+                    hm_valid_num = len(predicted_3dpose)
+                    fig = plt.figure()
+                    ax1 = plt.axes(projection='3d')
+                    for hm in range(hm_valid_num):
+                        center_point = predicted_3dpose[hm]
+                        if torch.sum(center_point) == 0:
+                            continue
+                        # import pdb;pdb.set_trace()
+                        # center_point = end_point_hm # B,M,3
+                        # 跟output 对齐
+                        pose_gt = output_3d_pose[:,:,hm,:3].float().to(device) / 100
+                        _,_,_,ind2 = nn_distance(center_point,pose_gt)
+                        # by default we only plot the first batch
+                        predicted_center = center_point[0]
+                        gt_center = pose_gt[0]
+                        xd_pred = predicted_center[ind2[0],0].detach().cpu().numpy()
+                        yd_pred = predicted_center[ind2[0],1].detach().cpu().numpy()
+                        zd_pred = predicted_center[ind2[0],2].detach().cpu().numpy()
+                        ax1.scatter3D(xd_pred,zd_pred,-yd_pred, s=5, color=[1,0,0])
+                        xd_gt = gt_center[:,0].detach().cpu().numpy()
+                        yd_gt = gt_center[:,1].detach().cpu().numpy()
+                        zd_gt = gt_center[:,2].detach().cpu().numpy()
+                        ax1.scatter3D(xd_gt,zd_gt,-yd_gt,s=7, color=[0,0,1])
+                        # plot the predicted in red and gt in blue
+                    folder_name = os.path.join(output_dir, 'debug_train_pics')
+                    points_folder = os.path.join(folder_name, 'points')
+                    if not os.path.exists(folder_name):
+                        os.makedirs(folder_name)
+                    if not os.path.exists(points_folder):
+                        os.makedirs(points_folder)
+                    plt.savefig(os.path.join(points_folder, f'points_{epoch}_i_{i}.jpg'))
 
 
+
+def validate_points3d(config, model, loader, output_dir, epoch=0, vali=False, device=torch.device('cuda'), dtype=torch.float, logger=logger):
+    batch_time = AverageMeter()
+    data_time = AverageMeter()
+    losses_2d = AverageMeter()
+    losses_3d = AverageMeter()
+    losses_vote = AverageMeter()
+    losses_objective = AverageMeter()
+    losses_distance = AverageMeter()
+
+    model.eval()
+
+    with torch.no_grad():
+        end = time.time()
+        for i, batch in enumerate(loader):
+            if len(batch) == 0:
+                continue
+            data_time.update(time.time() - end)
+            output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
+            loss_vote, loss_objective, loss_distance,loss_2d, predicted_3dpose = model(output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose)
+            if torch.any(torch.isnan(loss_2d)): 
+                continue
+            # import pdb; pdb.set_trace()
+            loss_vote = loss_vote.mean()
+            loss_objective = loss_objective.mean()
+            loss_distance = loss_distance.mean()
+            loss_2d = loss_2d.mean()
+            # loss_3d = loss_3d.mean()
+            loss_3d = loss_vote + loss_objective + loss_distance
+
+            losses_vote.update(loss_vote.item())
+            losses_objective.update(loss_objective.item())
+            losses_distance.update(loss_distance.item())
+            losses_2d.update(loss_2d.item())
+            losses_3d.update(loss_3d.item())
+
+            # loss_total = loss_3d  #loss_2d + 
+
+            # optimizer.zero_grad()
+            # loss_total.backward() # add loss 3d 
+            # optimizer.step()
+
+            data_time.update(time.time() - end)
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if i % config.PRINT_FREQ == 0:
+                gpu_memory_usage = torch.cuda.memory_allocated(0)
+                msg =   'Test: [{0}][{1}/{2}]\t' \
+                        'Time: {batch_time.val:.3f}s ({batch_time.avg:.3f}s)\t' \
+                        'Speed: {speed:.1f} samples/s\t' \
+                        'Data: {data_time.val:.3f}s ({data_time.avg:.3f}s)\t' \
+                        'loss_vote {losses_vote.val:.3f} ({losses_vote.avg:.3f})\t' \
+                        'loss_objective {losses_objective.val:.3f} ({losses_objective.avg:.3f})\t' \
+                        'loss_distance {losses_distance.val:.3f} ({losses_distance.avg:.3f})\t' \
+                        'loss_3d: {losses_3d.val:.3f} ({losses_3d.avg:.3f})\t' \
+                        'loss_2d: {losses_2d.val:.3f} ({losses_2d.avg:.3f})\t' \
+                        'Memory {memory:.1f}'.format(
+                        epoch, i, len(loader), batch_time=batch_time,
+                        speed=output_img.size(0) / batch_time.val,
+                        data_time=data_time, losses_2d = losses_2d, 
+                        losses_3d = losses_3d,losses_vote= losses_vote, 
+                        losses_objective = losses_objective,losses_distance = losses_distance,
+                        memory=gpu_memory_usage)
+                
+                logger.info(msg)
+                # add the vis part to the test
+                if i % 100 == 0:
+                    hm_valid_num = len(predicted_3dpose)
+                    fig = plt.figure()
+                    ax1 = plt.axes(projection='3d')
+                    for hm in range(hm_valid_num):
+                        center_point = predicted_3dpose[hm]
+                        if torch.sum(center_point) == 0:
+                            continue
+                        # import pdb;pdb.set_trace()
+                        # center_point = end_point_hm # B,M,3
+                        # 跟output 对齐
+                        pose_gt = output_3d_pose[:,:,hm,:3].float().to(device) / 100
+                        _,_,_,ind2 = nn_distance(center_point,pose_gt)
+                        # by default we only plot the first batch
+                        predicted_center = center_point[0]
+                        gt_center = pose_gt[0]
+                        xd_pred = predicted_center[ind2[0],0].detach().cpu().numpy()
+                        yd_pred = predicted_center[ind2[0],1].detach().cpu().numpy()
+                        zd_pred = predicted_center[ind2[0],2].detach().cpu().numpy()
+                        ax1.scatter3D(xd_pred,zd_pred,-yd_pred, s=5, color=[1,0,0])
+                        xd_gt = gt_center[:,0].detach().cpu().numpy()
+                        yd_gt = gt_center[:,1].detach().cpu().numpy()
+                        zd_gt = gt_center[:,2].detach().cpu().numpy()
+                        ax1.scatter3D(xd_gt,zd_gt,-yd_gt,s=7, color=[0,0,1])
+                        # plot the predicted in red and gt in blue
+                    folder_name = os.path.join(output_dir, 'debug_test_pics')
+                    points_folder = os.path.join(folder_name, 'points')
+                    if not os.path.exists(folder_name):
+                        os.makedirs(folder_name)
+                    if not os.path.exists(points_folder):
+                        os.makedirs(points_folder)
+                    plt.savefig(os.path.join(points_folder, f'points_{epoch}_i_{i}.jpg'))
+    
+    return losses_3d.avg
+                
 
 
 
@@ -833,6 +993,37 @@ def set_axes_equal(ax):
     ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
     ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
     ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
+
+def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
+    """
+    Input:
+        pc1: (B,N,C) torch tensor
+        pc2: (B,M,C) torch tensor
+        l1smooth: bool, whether to use l1smooth loss
+        delta: scalar, the delta used in l1smooth loss
+    Output:
+        dist1: (B,N) torch float32 tensor
+        idx1: (B,N) torch int64 tensor
+        dist2: (B,M) torch float32 tensor
+        idx2: (B,M) torch int64 tensor
+    """
+
+    N = pc1.shape[1] 
+    M = pc2.shape[1]
+
+    pc1_expand_tile = pc1.unsqueeze(2).repeat(1,1,M,1)
+    pc2_expand_tile = pc2.unsqueeze(1).repeat(1,N,1,1)
+    pc_diff = pc1_expand_tile - pc2_expand_tile
+    
+    pc_dist = torch.sum(pc_diff**2, dim=-1) # (B,N,M)
+    
+    # import pdb; pdb.set_trace()
+    dist1, idx1 = torch.min(pc_dist, dim=2) # (B,N)  每个推测点距离所有真值点最近的 距离 和真值indx
+    dist2, idx2 = torch.min(pc_dist, dim=1) # (B,M)  每个真值点距离所有推测点最近的 推测Index 和 距离
+    return dist1, idx1, dist2, idx2
+
+
+
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""

@@ -19,6 +19,7 @@ config.OUTPUT_DIR = 'output'
 config.LOG_DIR = 'log'
 config.DATA_DIR = ''
 config.BACKBONE_MODEL = 'pose_resnet'
+config.PRETRAINED = True
 config.MODEL = 'multi_person_posenet'
 config.GPUS = '0,1'
 config.WORKERS = 8

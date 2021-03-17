@@ -9,6 +9,7 @@ from __future__ import print_function
 
 import os
 import logging
+from logging import handlers
 import time
 from pathlib import Path
 
@@ -17,6 +18,32 @@ import torch.nn as nn
 import torch.optim as optim
 
 from core.config import get_model_name
+
+# create the class logger
+import logging
+from logging import handlers
+
+# class Logger(object):
+#     level_relations = {
+#         'debug':logging.DEBUG,
+#         'info':logging.INFO,
+#         'warning':logging.WARNING,
+#         'error':logging.ERROR,
+#         'crit':logging.CRITICAL
+#     }#mapping
+
+#     def __init__(self,filename,level='info',when='D',backCount=3,fmt='%(asctime)s - %(pathname)s[line:%(lineno)d] - %(levelname)s: %(message)s'):
+#         self.logger = logging.getLogger(filename)
+#         format_str = logging.Formatter(fmt)#设置日志格式
+#         # self.logger.setLevel(self.level_relations.get(level))#设置日志级别
+#         self.logger.setLevel(logging.INFO)
+#         sh = logging.StreamHandler()#往屏幕上输出
+#         sh.setFormatter(format_str) #设置屏幕上显示的格式
+#         th = handlers.TimedRotatingFileHandler(filename=filename,when=when,backupCount=backCount,encoding='utf-8')#
+#         th.setFormatter(format_str)#设置文件里写入的格式
+#         self.logger.addHandler(sh) #把对象加到logger里
+#         self.logger.addHandler(th)
+
 
 
 def create_logger(cfg, cfg_name, phase='train'):
@@ -40,13 +67,27 @@ def create_logger(cfg, cfg_name, phase='train'):
     time_str = time.strftime('%Y-%m-%d-%H-%M')
     log_file = '{}_{}_{}.log'.format(cfg_name, time_str, phase)
     final_log_file = final_output_dir / log_file
+    
     head = '%(asctime)-15s %(message)s'
-    logging.basicConfig(filename=str(final_log_file),
-                        format=head)
-    logger = logging.getLogger()
+
+    # log = Logger(str(final_log_file),fmt=head)
+    logger = logging.getLogger(str(final_log_file))
+    format_str = logging.Formatter(head)#设置日志格式
+    # self.logger.setLevel(self.level_relations.get(level))#设置日志级别
     logger.setLevel(logging.INFO)
-    console = logging.StreamHandler()
-    logging.getLogger('').addHandler(console)
+    sh = logging.StreamHandler()#往屏幕上输出
+    sh.setFormatter(format_str) #设置屏幕上显示的格式
+    th = handlers.TimedRotatingFileHandler(filename=str(final_log_file),when='D',backupCount=3,encoding='utf-8')#
+    th.setFormatter(format_str)#设置文件里写入的格式
+    logger.addHandler(sh) #把对象加到logger里
+    logger.addHandler(th)
+    # import pdb;pdb.set_trace()
+    # logging.basicConfig(filename=str(final_log_file),
+    #                     format=head)
+    # logger = logging.getLogger()
+    # logger.setLevel(logging.INFO)
+    # console = logging.StreamHandler()
+    # logging.getLogger('').addHandler(console)
 
     tensorboard_log_dir = tensorboard_log_dir / dataset / model / \
         (cfg_name + time_str)
@@ -119,6 +160,23 @@ def load_checkpoint_depth(model, optimizer, output_dir, filename='checkpoint.pth
     else:
         print('=> no checkpoint found at {}'.format(file))
         return 0, model, optimizer, dict(abs_rel=100)
+
+def load_checkpoint_point3d(model, optimizer, output_dir, filename='checkpoint.pth.tar'):
+    file = os.path.join(output_dir, filename)
+    if os.path.isfile(file):
+        checkpoint = torch.load(file)
+        start_epoch = checkpoint['epoch']
+        metrics = checkpoint['loss_3d'] if 'end_points' in checkpoint else 100
+        model.module.load_state_dict(checkpoint['state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        print('=> load checkpoint {} (epoch {})'
+              .format(file, start_epoch))
+
+        return start_epoch, model, optimizer, metrics
+
+    else:
+        print('=> no checkpoint found at {}'.format(file))
+        return 0, model, optimizer, 100
 
 def save_checkpoint(states, is_best, output_dir,
                     filename='checkpoint.pth.tar'):

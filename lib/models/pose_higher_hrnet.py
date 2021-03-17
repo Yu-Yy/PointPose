@@ -328,18 +328,19 @@ class PoseHigherResolutionNet(nn.Module):
             padding=1 if extra.FINAL_CONV_KERNEL == 3 else 0
             ))  # activation layer?
         # 反卷积后的convolution 变heatmap
-        deconv_cfg = extra.DECONV
-        for i in range(deconv_cfg.NUM_DECONVS): # 添加的这个tag维度可以不要
-            input_channels = deconv_cfg.NUM_CHANNELS[i] # 32维度输出固定 # 接受到的维度从这里给出
-            output_channels = cfg.NETWORK.NUM_JOINTS + dim_tag \
-                if cfg.LOSS.WITH_AE_LOSS[i+1] else cfg.NETWORK.NUM_JOINTS   # 输出维度一定
-            final_layers.append(nn.Conv2d(
-                in_channels=input_channels,
-                out_channels=output_channels,
-                kernel_size=extra.FINAL_CONV_KERNEL,
-                stride=1,
-                padding=1 if extra.FINAL_CONV_KERNEL == 3 else 0
-            ))
+        ## do not need the final output layer
+        # deconv_cfg = extra.DECONV
+        # for i in range(deconv_cfg.NUM_DECONVS): # 添加的这个tag维度可以不要
+        #     input_channels = deconv_cfg.NUM_CHANNELS[i] # 32维度输出固定 # 接受到的维度从这里给出
+        #     output_channels = cfg.NETWORK.NUM_JOINTS + dim_tag \
+        #         if cfg.LOSS.WITH_AE_LOSS[i+1] else cfg.NETWORK.NUM_JOINTS   # 输出维度一定
+        #     final_layers.append(nn.Conv2d(
+        #         in_channels=input_channels,
+        #         out_channels=output_channels,
+        #         kernel_size=extra.FINAL_CONV_KERNEL,
+        #         stride=1,
+        #         padding=1 if extra.FINAL_CONV_KERNEL == 3 else 0
+        #     ))
 
         return nn.ModuleList(final_layers) # 以list 形式返回
 
@@ -534,7 +535,7 @@ class PoseHigherResolutionNet(nn.Module):
             # print("The last feature's shape")
             # print(x.shape)
             # feature_output.append(x) # 多分辨率整合
-            y = self.final_layers[i+1](x)
+            # y = self.final_layers[i+1](x)
             # print("The last heatmap's shape")
             # print(y.shape)
             # y = self.relu(y)

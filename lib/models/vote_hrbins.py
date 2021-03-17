@@ -21,7 +21,8 @@ class Vote_Hr_Adbins(nn.Module):
         self.cfg = cfg
         self.device = device
         self.hr_adbins = eval('HrnetAdaptiveBins.build')(cfg,is_train)
-        self.votepose = VotePoseNet(cfg.MODEL_EXTRA.DECONV.NUM_CHANNELS[0])
+        self.num_proposals = 16
+        self.votepose = VotePoseNet(cfg.MODEL_EXTRA.DECONV.NUM_CHANNELS[0], self.num_proposals)
 
     def forward(self, images, gt_depth, gt_valid_mask,gt_hm, gt_weights, gt_trans, gt_K, gt_M, gt_diff, gt_3d_pose):  # copy from the original function part
         criterion_hm = PerJointMSELoss().cuda()
@@ -139,17 +140,27 @@ class Vote_Hr_Adbins(nn.Module):
             total_points[hm_idx] = torch.cat(total_points[hm_idx],dim=0)
         
         # send into the vote net 
-        loss_3d = torch.tensor(0).float().to(self.device)
+        # loss_3d = torch.tensor(0).float().to(self.device)
+        loss_distance = torch.tensor(0).float().to(self.device)
+        loss_objective = torch.tensor(0).float().to(self.device)
+        loss_vote = torch.tensor(0).float().to(self.device)
         predicted_3dpose = []
         for hm_idx in range(number_joints):
             if total_points[hm_idx].shape[1] == 0:
+                predicted_3dpose.append(torch.zeros((batch_num, self.num_proposals,3)).to(self.device))
                 continue
+            # import pdb; pdb.set_trace()
             end_points = self.votepose(total_points[hm_idx])
             # generate the corresponding gt_points
-            gt_points = gt_3d_pose[:,:,hm_idx,:3].float() # gt_3d_pose B,N,J,4
+
+            gt_points = gt_3d_pose[:,:,hm_idx,:3].float() / 100  # gt_3d_pose B,N,J,4  for metric
             loss, end_points = get_loss(end_points, gt_points) # B, valid_num,3
+            loss_distance = loss_distance + end_points['distance_loss']
+            loss_objective = loss_objective + end_points['objectness_loss']
+            loss_vote = loss_vote + end_points['vote_loss']
+
             predicted_3dpose.append(end_points['center'])
-            loss_3d = loss_3d + loss
+            # loss_3d = loss_3d + loss
         
         # print('forward OK!')
         # print(f"{loss_3d} loss 3d")
@@ -157,7 +168,7 @@ class Vote_Hr_Adbins(nn.Module):
         # print(f"{loss_2d} loss 2d")
         # print(loss_2d)
         # print(predicted_3dpose)
-        return loss_3d, loss_2d, predicted_3dpose
+        return loss_vote,loss_objective,loss_distance,loss_2d, predicted_3dpose
 
 
 

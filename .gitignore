@@ -138,3 +138,5 @@ test*
 debug*
 trash/
 points_debug/
+votepose_test/
+point_3dpose/

@@ -186,7 +186,7 @@ class VotePoseProposal(nn.Module):
         # Vote clustering
         self.vote_aggregation = PointnetSAModuleVotes( 
                 npoint=self.num_proposal,
-                radius=0.3,
+                radius=0.3, # in meter
                 nsample=16,
                 mlp=[self.seed_feat_dim, 128, 128, 128],
                 use_xyz=True,
@@ -241,13 +241,31 @@ class VotePoseProposal(nn.Module):
         end_points = decode_scores(net, end_points)
         return end_points
 
+## panzhiyu revised version
 def compute_vote_loss(end_points, gt_points):
-    
-    # seed_xyz = end_points['seed_xyz'] # if for seed loss, 
+    seed_xyz = end_points['seed_xyz'] # if for seed loss, 
     #[B,N,3]
     vote_xyz = end_points['vote_xyz']
-    dist1, ind1, dist2, ind2 = nn_distance(vote_xyz, gt_points) # 
-    shift_loss = torch.mean(dist1)
+    # import pdb; pdb.set_trace()
+    batch_size = vote_xyz.shape[0]
+    dist1, ind1, dist2, ind2 = nn_distance(seed_xyz, gt_points) # using the seed to judge its corresponding class
+    positive_mask = (dist1 <= 0.49)
+    # negative_mask = ~ positive_mask
+    # ind1 is B * N  gt points is B * M * 3
+    gt_vote_xyz = []
+    for b in range(batch_size):
+        gt_vote_xyz.append(gt_points[b:b+1,ind1[b],...])
+    gt_vote_xyz = torch.cat(gt_vote_xyz,dim=0)
+    # gt_vote_xyz = gt_points[]
+    shift_distance = vote_xyz - gt_vote_xyz
+    shift_loss = torch.mean(torch.norm(shift_distance,dim=2)[positive_mask])
+    # if torch.sum(negative_mask) == 0:
+    #     vote_loss = shift_loss
+    # else:
+    #     still_distance = vote_xyz - seed_xyz
+    #     keep_loss = torch.mean(torch.norm(still_distance,dim=2)[negative_mask])
+    #     vote_loss = keep_loss + shift_loss
+
     return shift_loss
 
 def compute_proposal_loss(end_points, gt_points):
@@ -256,14 +274,54 @@ def compute_proposal_loss(end_points, gt_points):
     batch_size = center_proposal.shape[0]
     dist1, ind1, dist2, ind2 = nn_distance(center_proposal, gt_points)
     # import pdb; pdb.set_trace()
-    positive_mask = (dist1 <= 1)  # for a big one at the initial 
+    positive_mask = (dist1 <= 0.15 * 0.15)  # for a big one at the initial 
     criterion = nn.CrossEntropyLoss()
     objectness_loss = criterion(objectness_proposal.reshape(-1,2), positive_mask.reshape(-1).long()) # 是否为关节点，交叉loss
-    if torch.sum(positive_mask) == 0:
-        distance_loss = 0
-    else:
-        distance_loss = torch.mean(dist1[positive_mask]) #/ torch.sum(positive_mask) #* 100
+    # if torch.sum(positive_mask) == 0:
+    #     distance_loss = 0
+    # else:
+        # distance_loss = torch.mean(dist1[positive_mask]) #/ torch.sum(positive_mask) #* 100
+    foreground_mask = (dist1 <= 0.49) # all positive points
+    # import pdb;pdb.set_trace()
+    distance_loss = torch.mean(dist1[foreground_mask])
     return objectness_loss, distance_loss
+
+# def compute_vote_loss(end_points, gt_points):
+#     vote_xyz = end_points['vote_xyz']
+#     seed_xyz = end_points['seed_xyz']
+#     #[B,N,3]
+#     #vote_shift = vote_xyz - seed_xyz
+#     batch_size = vote_xyz.shape[0]
+#     shift_loss = 0
+#     for b in range(batch_size):
+#         #print(vote_xyz[b].shape)
+#         #print(gt_points[b].shape)
+#         dist1, ind1, dist2, ind2 = nn_distance(seed_xyz[b].unsqueeze(0), gt_points[b].unsqueeze(0)) # using seed's coord indx to supervise the vote
+#         gt_seed_xyz = gt_points[b,ind1.squeeze(),:]
+#         shift_loss_tmp = vote_xyz[b] - gt_seed_xyz #[B,N,3]
+        
+#         shift_loss += torch.sum(torch.norm(shift_loss_tmp, dim = 1)) / shift_loss_tmp.shape[0] 
+#     #gt_points['vote_loss'] = shift_loss
+#     return shift_loss
+
+# def compute_proposal_loss(end_points, gt_points):
+#     center_proposal = end_points['center']
+#     objectness_proposal = end_points['objectness_scores']
+#     batch_size = center_proposal.shape[0]
+#     distance_loss = objectness_loss = 0
+#     for b in range(batch_size):
+#         dist1, ind1, dist2, ind2 = nn_distance(center_proposal[b].unsqueeze(0), gt_points[b].unsqueeze(0))
+#         positive_mask = (dist1 <= 0.15).squeeze()
+#         neg_mask = torch.zeros_like(positive_mask)
+#         neg_mask[positive_mask==False] = 1
+#         gt_mask = torch.stack([positive_mask,neg_mask],1)
+#         criterion = nn.CrossEntropyLoss()
+#         #print(gt_mask.float())
+#         #print(objectness_proposal[b])
+#         objectness_loss += criterion(objectness_proposal[b], positive_mask.long())
+#         distance_loss += torch.sum(dist1[0,positive_mask]) / torch.sum(positive_mask.float()) * 10
+#     return objectness_loss, distance_loss
+
 
 def get_loss(end_points, gt_points):
     # endpoints:[B,N,3]
@@ -271,10 +329,10 @@ def get_loss(end_points, gt_points):
 
     # Vote loss
     vote_loss = compute_vote_loss(end_points, gt_points)
-    
     end_points['vote_loss'] = vote_loss
 
     objectness_loss, distance_loss = compute_proposal_loss(end_points, gt_points)
+    # import pdb; pdb.set_trace()
     end_points['objectness_loss'] = objectness_loss
     end_points['distance_loss'] = distance_loss
     if distance_loss == 0:

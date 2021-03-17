@@ -51,7 +51,7 @@ class get_3d_points(nn.Module):
         self.orig_W = orig_W
         self.orig_H = orig_H
 
-    def forward(self, pred_depth, filter_mask, K_matrix, M_matrix,diff, trans_matrix, total_points, feature_input):
+    def forward(self, pred_depth, filter_mask, K_matrix, M_matrix,diff, trans_matrix, total_points, feature_input, metric=100):
         pred_depth = pred_depth.squeeze(1)
         _,C,_,_ = feature_input.shape
         B,H,W = pred_depth.shape
@@ -73,7 +73,7 @@ class get_3d_points(nn.Module):
         y_cor = y_cor.reshape(-1,1)
         cor_2d = torch.cat([x_cor,y_cor,torch.ones(x_cor.shape[0],1).to(self.device)],dim=-1).transpose(0,1)
         cor_2d_batch = cor_2d.unsqueeze(0).repeat(B,1,1)
-        norm_2d = torch.bmm(torch.inverse(K_matrix), cor_2d_batch.double())
+        norm_2d = torch.bmm(torch.inverse(K_matrix), cor_2d_batch.double()) # access illegal memory?
         norm_2d = norm_2d.permute([0,2,1])
         x_cor_depth = norm_2d[...,0:1]
         x_cor_bak = x_cor_depth.clone().detach()
@@ -99,7 +99,7 @@ class get_3d_points(nn.Module):
         point_3D = torch.bmm(torch.inverse(M_matrix), depth_cam.permute([0,2,1]))
         # point_3D = np.linalg.pinv(M_depth) @ depth_cam.transpose()
         # point_3d = point_3D[:3,:].transpose()
-        point_panoptic = torch.bmm(trans_matrix, point_3D)
+        point_panoptic = torch.bmm(trans_matrix, point_3D) / metric 
         point_panoptic = point_panoptic[:,:3,:].permute([0,2,1])
         
         # batch_points = []
