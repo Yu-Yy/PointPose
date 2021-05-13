@@ -190,18 +190,31 @@ def load_backbone_panoptic(model, pretrained_file):
     this_dir = os.path.dirname(__file__)
     pretrained_file = os.path.abspath(os.path.join(this_dir, '../..', pretrained_file))
     pretrained_state_dict = torch.load(pretrained_file)
-    model_state_dict = model.module.backbone.state_dict()
-
-    prefix = "module."
+    model_state_dict_backbone = model.module.backbone.state_dict()  #.backbone
+    model_state_dict_depth = model.module.depth_header.state_dict()
+    model_state_dict_pm = model.module.PM_header.state_dict()
+    # prefix = "module."
+    # prefix = ""
     # print('orig')
     # print(model_state_dict.keys())
     # print('pretrained')
     # print(pretrained_state_dict.keys())
     # error
-    new_pretrained_state_dict = {}
+    prefix_b = 'backbone.'
+    prefix_d = 'depth_header.'
+    prefix_p = 'PM_header.'
+    new_pretrained_state_dict_bacbone = {}
+    new_pretrained_state_dict_pm = {}
+    new_pretrained_state_dict_depth = {}
     for k, v in pretrained_state_dict.items():
-        if k.replace(prefix, "") in model_state_dict and v.shape == model_state_dict[k.replace(prefix, "")].shape:
-            new_pretrained_state_dict[k.replace(prefix, "")] = v
+        # import pdb;pdb.set_trace()
+        if k.replace(prefix_b, "") in model_state_dict_backbone and v.shape == model_state_dict_backbone[k.replace(prefix_b, "")].shape:     #.replace(prefix, "") .replace(prefix, "")
+            new_pretrained_state_dict_bacbone[k.replace(prefix_b, "")] = v                    
+        if k.replace(prefix_d, "") in model_state_dict_depth and v.shape == model_state_dict_depth[k.replace(prefix_d, "")].shape:     #.replace(prefix, "") .replace(prefix, "")
+            new_pretrained_state_dict_depth[k.replace(prefix_d, "")] = v 
+        if k.replace(prefix_p, "") in model_state_dict_pm and v.shape == model_state_dict_pm[k.replace(prefix_p, "")].shape:     #.replace(prefix, "") .replace(prefix, "")
+            new_pretrained_state_dict_pm[k.replace(prefix_p, "")] = v 
+        #.replace(prefix, "")
         # elif k.replace(prefix, "") == "final_layer.weight":  # TODO
         #     print("Reiniting final layer filters:", k)
 
@@ -219,7 +232,10 @@ def load_backbone_panoptic(model, pretrained_file):
         #     o[:n_filters] = v[:n_filters]
 
         #     new_pretrained_state_dict[k.replace(prefix, "")] = o
-    logging.info("load backbone statedict from {}".format(pretrained_file))
-    model.module.backbone.load_state_dict(new_pretrained_state_dict)
+    logging.info("load statedict from {}".format(pretrained_file))
+    # model.module.backbone.load_state_dict(new_pretrained_state_dict)
+    model.module.backbone.load_state_dict(new_pretrained_state_dict_bacbone)
+    model.module.depth_header.load_state_dict(new_pretrained_state_dict_depth)
+    model.module.PM_header.load_state_dict(new_pretrained_state_dict_pm)
 
     return model

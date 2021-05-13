@@ -33,7 +33,7 @@ from utils.utils import load_backbone_panoptic
 import dataset  # a new depth dataset
 import models
 
-from dataset.panoptic_depth_multview import Panoptic_Depth # 暂用
+from dataset.panoptic_depth_multview import Panoptic_Depth_Mul as Panoptic_Depth # 暂用
 
 def ommit_collate_fn(batch):
     # import pdb; pdb.set_trace()

@@ -76,6 +76,7 @@ config.NETWORK.FEATURE = True
 config.NETWORK.PRETRAINED = 'models/pytorch/imagenet/resnet50-19c8e357.pth'
 config.NETWORK.PRETRAINED_BACKBONE = ''
 config.NETWORK.NUM_JOINTS = 19
+config.NETWORK.NUM_CONNS = 14
 config.NETWORK.INPUT_SIZE = 512
 config.NETWORK.HEATMAP_SIZE = np.array([80, 80])
 config.NETWORK.IMAGE_SIZE = np.array([320, 320])

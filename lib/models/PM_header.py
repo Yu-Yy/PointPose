@@ -9,12 +9,18 @@ def conv3x3(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
 
+def conv1x1(in_planes, out_planes, stride=1):
+    """1x1 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride,
+                     padding=0, bias=False)
+
 
 class BasicBlock(nn.Module):
     expansion = 1
 
     def __init__(self, inplanes, planes, stride=1, downsample=None):
         super(BasicBlock, self).__init__()
+        self.conv1x1 = conv1x1(inplanes, planes)
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = nn.BatchNorm2d(planes, momentum=BN_MOMENTUM)
         self.relu = nn.ReLU(inplace=True)
@@ -24,7 +30,7 @@ class BasicBlock(nn.Module):
         self.stride = stride
 
     def forward(self, x):
-        residual = x
+        residual = self.conv1x1(x)
 
         out = self.conv1(x)
         out = self.bn1(out)
@@ -45,18 +51,42 @@ class BasicBlock(nn.Module):
 class PoseMaskEstimation(nn.Module):
     def __init__(self,cfg, basicM_num = 1):
         super(PoseMaskEstimation, self).__init__()
-        self.pose_l = self.__make_pose__(basicM_num, cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0], cfg.NETWORK.NUM_JOINTS)
+        self.conns_num = cfg.NETWORK.NUM_CONNS
+        self.paf_l = self.__make_paf__(basicM_num, cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0], cfg.NETWORK.NUM_CONNS * 2)
+        self.pose_l = self.__make_pose__(basicM_num, cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0] + cfg.NETWORK.NUM_CONNS * 2, cfg.NETWORK.NUM_JOINTS)
         self.mask_l = self.__make_mask__(basicM_num, cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0])
-
-    def __make_pose__(self, basicM_num, inplane, num_joints):
+    
+    def __make_paf__(self, basicM_num, inplane, num_joints): # generate paf and hm
         layers = []
         for _ in range(basicM_num):
             layers.append(nn.Sequential(
                 BasicBlock(inplane, inplane),
             ))
+        layers.append(nn.Sequential(
+                BasicBlock(inplane, inplane * 3),
+            ))
         transition = nn.Sequential(*layers)
         final_layer = nn.Sequential(nn.Conv2d(
-                in_channels=inplane,
+                in_channels=3 * inplane,
+                out_channels=num_joints,
+                kernel_size=3,
+                stride=1,
+                padding=1
+            ), nn.ReLU(inplace=True))
+        return nn.Sequential(transition,final_layer)
+
+    def __make_pose__(self, basicM_num, inplane, num_joints): # generate paf and hm
+        layers = []
+        for _ in range(basicM_num):
+            layers.append(nn.Sequential(
+                BasicBlock(inplane, inplane),  
+            ))
+        # layers.append(nn.Sequential(
+        #         BasicBlock(inplane, inplane * 2),
+        #     ))
+        transition = nn.Sequential(*layers)
+        final_layer = nn.Sequential(nn.Conv2d(
+                in_channels= inplane,
                 out_channels=num_joints,
                 kernel_size=3,
                 stride=1,
@@ -81,9 +111,11 @@ class PoseMaskEstimation(nn.Module):
         return nn.Sequential(transition,final_layer)
 
     def forward(self, feature):
-        pose = self.pose_l(feature)
+        paf = self.paf_l(feature)
+        pose_feature = torch.cat([feature,paf],dim=1) # cat for the channel
+        pose = self.pose_l(pose_feature)
         mask = self.mask_l(feature)
-        return pose, mask
+        return paf, pose, mask
         
 
         

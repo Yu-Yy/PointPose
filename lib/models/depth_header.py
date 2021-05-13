@@ -16,14 +16,18 @@ class DepthEstimation(nn.Module):
         # self.encoder = Encoder(backend)
         # self.backbone = backend # extracting features
         self.num_query_seq = 128
+        embedding_dim = 128
         self.ada_input_channels = cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0] # 32 channel feature
         self.adaptive_bins_layer = mViT(self.ada_input_channels, n_query_channels=self.num_query_seq, patch_size=16,  # 128 feature channel output # 
                                         dim_out=n_bins,
-                                        embedding_dim=128, norm=norm)
+                                        embedding_dim=embedding_dim, norm=norm)
 
         # self.decoder = DecoderBN(num_classes=128)
         self.conv_out = nn.Sequential(nn.Conv2d(self.num_query_seq, n_bins, kernel_size=1, stride=1, padding=0), # 128 should be the query channel's number
                                       nn.Softmax(dim=1))
+        # self.uncertainty_out = nn.Sequential(nn.Conv2d(self.ada_input_channels, embedding_dim, kernel_size=3, stride=1, padding=1),
+        #                                     nn.LeakyReLU(),nn.Conv2d(embedding_dim, 1, kernel_size=3, stride=1, padding=1))
+
 
     def forward(self, feature, **kwargs):
         # unet_out = self.decoder(self.encoder(x), **kwargs) # 128通道特征输出，batch 128 h/2 w/2
@@ -33,7 +37,7 @@ class DepthEstimation(nn.Module):
         # import pdb; pdb.set_trace()
         bin_widths_normed, range_attention_maps = self.adaptive_bins_layer(feature) # attention map 相当于 每个像素点的 FC 
         out = self.conv_out(range_attention_maps)
-
+        # depth_uncertainty = self.uncertainty_out(feature)
         # Post process
         # n, c, h, w = out.shape
         # hist = torch.sum(out.view(n, c, h * w), dim=2) / (h * w)  # not used for training
@@ -45,10 +49,10 @@ class DepthEstimation(nn.Module):
         centers = 0.5 * (bin_edges[:, :-1] + bin_edges[:, 1:])
         n, dout = centers.size()
         centers = centers.view(n, dout, 1, 1)
+        # output the center as probalility
 
         pred = torch.sum(out * centers, dim=1, keepdim=True)
-
-        return bin_edges, pred
+        return bin_edges, pred #, depth_uncertainty
 
     def get_1x_lr_params(self):  # lr/10 learning rate
         return self.encoder.parameters()

@@ -80,12 +80,14 @@ def main():
         model = torch.nn.DataParallel(model, device_ids=gpus).cuda()
 
     test_model_file = os.path.join(final_output_dir, config.TEST.MODEL_FILE)
+    # test_model_file = '/home/panzhiyu/project/3d_pose/voxelpose-pytorch/point_3d2d_train_dff5/panoptic_depth_multview/voteposenet_50/pose3d_est/epoch0_state.pth.tar'
     if config.TEST.MODEL_FILE and os.path.isfile(test_model_file):
         logger.info('=> load models state {}'.format(test_model_file))
         model.module.load_state_dict(torch.load(test_model_file))
     else:
         raise ValueError('Check the model file for testing!')
 
+    
     validate_3d(config, model, test_loader, final_output_dir)
 
 

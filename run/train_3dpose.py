@@ -85,7 +85,6 @@ def get_optimizer(model):
 
     return model, optimizer
 
-
 def main():
     
     cudnn.benchmark = config.CUDNN.BENCHMARK
@@ -100,6 +99,7 @@ def main():
     logger.info(pprint.pformat(config))
 
     gpus = [int(i) for i in config.GPUS.split(',')] # 多卡
+    # import pdb;pdb.set_trace()
     print('=> Loading data ..')
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # RGB image processing
@@ -117,7 +117,7 @@ def main():
         num_workers=config.WORKERS,
         collate_fn = ommit_collate_fn,
         pin_memory=True)
-
+    
     test_dataset = eval('dataset.' + config.DATASET.TEST_DATASET)(config,
         config.DATASET.ROOT, config.DATASET.KP_ROOT, config.DATASET.TEST_VIEW_SET, False,
         transforms.Compose([
@@ -136,6 +136,7 @@ def main():
     model = eval('models.' + config.MODEL)( # hrnet_adabins.build
         config, is_train=True) # create the model
 
+    # import pdb; pdb.set_trace()
     with torch.no_grad():
         model = torch.nn.DataParallel(model, device_ids=gpus).cuda() # 数据输送方式
 
@@ -147,10 +148,16 @@ def main():
     # model_file = '/home/panzhiyu/project/3d_pose/voxelpose-pytorch/output_multitask_2d_depth_5cam/panoptic_depth/hrnet_adabins_50/depth_est/model_best.pth.tar'
     
     if config.PRETRAINED:
-        model_file = '/home/panzhiyu/project/3d_pose/voxelpose-pytorch/point_3dpose/panoptic_depth_multview/voteposenet_50/pose3d_est/temp_model.pth.tar'
+        # model_file = '/home/panzhiyu/project/3d_pose/voxelpose-pytorch/output_mul_0408_paf/panoptic_depth/hrnet_adabins_50/depth_est/final_state.pth.tar'
+        # logging.info("load backbone statedict from {}".format(model_file))
+        # pretrained_state_dict = torch.load(model_file)
+        # model.module.hr_adbins.load_state_dict(pretrained_state_dict)
+        # # last version 
+        model_file = '/home/panzhiyu/project/3d_pose/voxelpose-pytorch/point_3d_0414/panoptic_depth_multview/voteposenet_50/pose3d_est/model_best.pth.tar'
         logger.info('=> load models pretrained {}'.format(model_file))
         pretrained_model = torch.load(model_file)
         model.module.load_state_dict(pretrained_model)
+        # start_epoch = 1
 
     # mini_loss_3d = 100 # a high value
     # load from previous training
@@ -158,7 +165,7 @@ def main():
         start_epoch, model, optimizer, metrics_load = load_checkpoint_point3d(model, optimizer, final_output_dir) # TODO: Load the A1 metrics
         mini_loss_3d = metrics_load
 
-
+    
     # if config.TRAIN.RESUME: 
     #     logger.info('=> load models state {}'.format(model_file))
     #     pretrained_state_dict = torch.load(model_file) # changed the unchanged part delete that weight
@@ -206,11 +213,13 @@ def main():
     
     # generating the log
     
-
     # sys.stdout = Logger(stream = sys.stdout)
     for epoch in range(start_epoch, end_epoch):
         print('Epoch: {}'.format(epoch))
         # lr_scheduler.step()
+        if epoch == 0:
+            loss_3d_c = validate_points3d(config, model, test_loader, final_output_dir,epoch,logger=logger)
+        
         train_points3d(config, model, optimizer, train_loader, epoch, final_output_dir, writer_dict, logger=logger)
         if epoch % 2 ==  0:
             model_name =os.path.join(final_output_dir,
@@ -220,7 +229,7 @@ def main():
             torch.save(model.module.state_dict(), model_name)
         loss_3d_c = validate_points3d(config, model, test_loader, final_output_dir,epoch,logger=logger)
         
-        # # get the abs_rel
+        # get the abs_rel
         if loss_3d_c < mini_loss_3d:
             mini_loss_3d = loss_3d_c
             best_model = True

@@ -18,29 +18,65 @@ import torchvision.transforms as transforms
 from functools import reduce
 import matplotlib.pyplot as plt 
 
-# GEN_LIST = [
-# "160226_haggling1",
-# "160906_ian1",
-# "160906_ian2",
-# "160906_band1",
-# "160906_band2",
-# "160906_pizza1",
-# "160422_haggling1",
-# "160906_ian5",
-# ]
+JOINTS_DEF = {
+    'neck': 0,
+    'nose': 1,
+    'mid-hip': 2,
+    'l-shoulder': 3,
+    'l-elbow': 4,
+    'l-wrist': 5,
+    'l-hip': 6,
+    'l-knee': 7,
+    'l-ankle': 8,
+    'r-shoulder': 9,
+    'r-elbow': 10,
+    'r-wrist': 11,
+    'r-hip': 12,
+    'r-knee': 13,
+    'r-ankle': 14,
+    # 'l-eye': 15,
+    # 'l-ear': 16,
+    # 'r-eye': 17,
+    # 'r-ear': 18, # 恢复后四点
+} # panoptic 实际使用关节点数为15
 
-# train the dataset in the 2D's test set
-GEN_LIST = ["161202_haggling1",
-            "160906_ian3", 
+
+GEN_LIST = [
+"160226_haggling1",
+"160906_ian1",
+"160906_ian2",
+"160906_band1",
+"160906_band2",
+"160906_pizza1",
+"160422_haggling1",
+"160906_ian5",
 ]
 
+# train the dataset in the 2D's test set
+# GEN_LIST = ["161202_haggling1",
+#             "160906_ian3", 
+# ]
+
 TEST_LIST = [
-    # "161202_haggling1",
-    # "160906_ian3",
+    "161202_haggling1",
+    "160906_ian3",
     "160906_band3",
 ]
 
-
+CONNS =  [[0, 1],
+         [0, 2],
+         [0, 3],
+         [3, 4],
+         [4, 5],
+         [0, 9],
+         [9, 10],
+         [10, 11],
+         [2, 6],
+         [2, 12],
+         [6, 7],
+         [7, 8],
+         [12, 13],
+         [13, 14]]
 
 class Panoptic_Depth_Mul(Dataset):
     def __init__(self, cfg, image_folder, keypoint_folder, view_set,is_train = True, transform = None): # TODO add keypoint folder  cfg
@@ -53,13 +89,14 @@ class Panoptic_Depth_Mul(Dataset):
         self.image_size = np.array([1920,1080])
         # self.input_size = cfg.dataset.input_size 
         self.input_size = np.array([960,512])
-        self.crop_size = np.array([680,512])
+        # self.crop_size = np.array([680,512])
         self.heatmap_size = self.input_size / 2
         self.heatmap_size = self.heatmap_size.astype(np.int16)
         self.num_joints = cfg.NETWORK.NUM_JOINTS
         self.sigma = cfg.NETWORK.SIGMA
         self.max_people = cfg.DATASET.MAX_PEOPLE_NUM
         self.single_size = 512*424
+        self.conns = CONNS
         if is_train:
             self.scene_list = GEN_LIST
         else:
@@ -123,19 +160,20 @@ class Panoptic_Depth_Mul(Dataset):
             try:
                 kp_row_data = json.load(kp)
             except:
-                return None,None,None,None,None,None,None,None,None, None
+                return None,None,None,None,None,None,None,None,None,None,None
 
         univ_time = kp_row_data['univTime']  
         kp3d_body_data = kp_row_data['bodies'] 
         num_people = len(kp3d_body_data)
+        output_num_people = torch.tensor(num_people)
         if num_people == 0:
-            return None,None,None,None,None,None,None,None,None, None
+            return None,None,None,None,None,None,None,None,None, None, None
         # get the 3d
         # output_pose_3d = torch.zeros(self.max_people, self.num_joints, 4)
         pose_3d = []
-        for n in range(num_people):
+        for n in range(num_people): # changed to 15 joints
             pose3d = np.array(kp3d_body_data[n]['joints19']).reshape((-1, 4))
-            pose_3d.append(np.expand_dims(pose3d,axis=0))
+            pose_3d.append(np.expand_dims(pose3d[:self.num_joints,:],axis=0)) 
         pose_3d = np.concatenate(pose_3d,axis=0) # (N, 19, 4)
         pose_3d = torch.from_numpy(pose_3d)
         offset = self.max_people - num_people
@@ -150,6 +188,7 @@ class Panoptic_Depth_Mul(Dataset):
         output_depth = []
         output_valid_mask = []
         output_hm = []
+        output_paf = []
         output_weights = []
         output_trans = []
         output_K = []
@@ -160,13 +199,13 @@ class Panoptic_Depth_Mul(Dataset):
             match_synctable_rgb = np.array(self.ksync_data[scene_index]['kinect']['color'][f'KINECTNODE{int(view)}']['univ_time']) - 6.25
             target_frame_rgb_idx = np.argmin(abs(match_synctable_rgb - univ_time),axis=0)
             if abs(self.ksync_data[scene_index]['kinect']['color'][f'KINECTNODE{int(view)}']['univ_time'][target_frame_rgb_idx] - 6.25 - univ_time) > 30:
-                return None, None, None, None, None, None, None, None, None, None # not yet
+                return None, None, None, None, None, None, None, None, None, None, None # not yet
             match_synctable_depth = np.array(self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{int(view)}']['univ_time'])
             target_frame_depth_idx = np.argmin(abs(match_synctable_depth - univ_time),axis=0)
             if abs(self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{int(view)}']['univ_time'][target_frame_depth_idx] - univ_time) > 17:
-                return None, None, None, None, None, None, None, None, None, None # not yet
+                return None, None, None, None, None, None, None, None, None, None, None # not yet
             if abs(self.ksync_data[scene_index]['kinect']['color'][f'KINECTNODE{int(view)}']['univ_time'][target_frame_rgb_idx] - self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{int(view)}']['univ_time'][target_frame_depth_idx]) > 6.5:
-                return None, None, None, None, None, None, None, None, None, None # not yet
+                return None, None, None, None, None, None, None, None, None, None, None # not yet
 
             # get the trans matrix
             panoptic_calibData = self.calib_data[scene_index]['cameras'][view + 509] # from 510 to 519
@@ -270,15 +309,15 @@ class Panoptic_Depth_Mul(Dataset):
             except:
                 # import pdb; pdb.set_trace()
                 #output_valid_mask.append(torch.ones(1,int(self.crop_size[1]),int(self.crop_size[0]))) # all one for mask
-                return None, None, None, None, None, None, None, None, None, None # 舍弃问题mask
+                return None, None, None, None, None, None, None, None, None, None, None # 舍弃问题mask
 
             # process the heatmap
             joints = []
             joints_vis = []
             for n in range(num_people): # TODO: using batch process for accelerating
                 pose3d = np.array(kp3d_body_data[n]['joints19']).reshape((-1, 4))
-                anno_vis = pose3d[:, -1] > 0.1
-                pose3d_proc = pose3d[...,:3]
+                anno_vis = pose3d[:self.num_joints, -1] > 0.1 # 15 points output
+                pose3d_proc = pose3d[:self.num_joints,:3] # 15 points
                 R_p = np.array(panoptic_calibData['R'])
                 T_p = np.array(panoptic_calibData['t'])
                 pose2d = self.__projectjointsPoints__(pose3d_proc.transpose(),K_color,R_p, T_p, Kd)
@@ -301,10 +340,15 @@ class Panoptic_Depth_Mul(Dataset):
                 anno_vis = np.expand_dims(anno_vis,axis = -1)
                 joints_vis.append(anno_vis)
 
-            target_heatmap, target_weight = self.__generate_target_heatmap__(
+            target_heatmap, gt_paf,target_weight = self.__generate_target_heatmap__(
                 joints, joints_vis)
             target_heatmap = target_heatmap[:,:,71:411]
             target_heatmap = torch.from_numpy(target_heatmap)
+
+            gt_paf = gt_paf[:,:,71:411]
+            gt_paf = torch.from_numpy(gt_paf)
+            output_paf.append(gt_paf.unsqueeze(0))
+
             output_hm.append(target_heatmap.unsqueeze(0))
             target_weight = torch.from_numpy(target_weight)
             output_weights.append(target_weight.unsqueeze(0))
@@ -318,8 +362,9 @@ class Panoptic_Depth_Mul(Dataset):
         output_K = torch.cat(output_K, dim=0)
         output_M = torch.cat(output_M, dim=0)
         output_diff = torch.cat(output_diff,dim=0)
+        output_paf = torch.cat(output_paf, dim=0)
             
-        return output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_pose_3d
+        return output_img, output_depth, output_valid_mask,output_hm, output_paf ,output_weights, output_trans, output_K, output_M, output_diff, output_pose_3d, output_num_people
 
     def __affine_transform__(self, pt, t):
         new_pt = np.array([pt[0], pt[1], 1.]).T
@@ -489,7 +534,7 @@ class Panoptic_Depth_Mul(Dataset):
         direct = a - b
         return np.array(b) + np.array([-direct[1], direct[0]], dtype=np.float32)
 
-    def __generate_target_heatmap__(self, joints, joints_vis):
+    def __generate_target_heatmap__(self, joints, joints_vis, threshold=1):
         '''
         :param joints:  [[num_joints, 3]]
         :param joints_vis: [num_joints, 3]
@@ -506,13 +551,18 @@ class Panoptic_Depth_Mul(Dataset):
         target = np.zeros(
             (num_joints, self.heatmap_size[1], self.heatmap_size[0]),
             dtype=np.float32)
+        
+        pafs = np.zeros(
+                (len(self.conns) * 2, self.heatmap_size[1], self.heatmap_size[0]),
+                dtype=np.float32)
+
         feat_stride = self.input_size / self.heatmap_size
 
         for n in range(nposes):
             human_scale = 2 * self.__compute_human_scale__(joints[n] / feat_stride, joints_vis[n]) # TODO: compute human scale
             if human_scale == 0:
                 continue
-
+            # generate the heatmap
             cur_sigma = self.sigma * np.sqrt((human_scale / (96.0 * 96.0)))
             tmp_size = cur_sigma * 3
             for joint_id in range(num_joints):
@@ -546,8 +596,99 @@ class Panoptic_Depth_Mul(Dataset):
                 target[joint_id][img_y[0]:img_y[1], img_x[0]:img_x[1]] = np.maximum(target[joint_id][img_y[0]:img_y[1], img_x[0]:img_x[1]],
                     g[g_y[0]:g_y[1], g_x[0]:g_x[1]])
             target = np.clip(target, 0, 1)
+            # generate the paf
+            for (k, conn) in enumerate(self.conns):
+                # feat_stride = self.input_size / self.heatmap_size
+                pafa = pafs[k * 2,:, :]
+                pafb = pafs[k * 2 + 1,:, :]
+                points1 = joints[n][conn[0], :]
+                points2 = joints[n][conn[1], :]
+                x_center1 = points1[0] / feat_stride[0]
+                x_center2 = points2[0] / feat_stride[0]
+                y_center1 = points1[1] / feat_stride[1]
+                y_center2 = points2[1] / feat_stride[1]
 
-        return target, target_weight
+                line = np.array((x_center2 - x_center1, y_center2 - y_center1))
+                if np.linalg.norm(line) == 0:
+                    continue
+                x_min = max(int(round(min(x_center1, x_center2) - threshold)), 0)
+                x_max = min(int(round(max(x_center1, x_center2) + threshold)), self.heatmap_size[0])
+                y_min = max(int(round(min(y_center1, y_center2) - threshold)), 0)
+                y_max = min(int(round(max(y_center1, y_center2) + threshold)), self.heatmap_size[1])
+
+                line /= np.linalg.norm(line)
+                vx, vy = [paf[y_min:y_max, x_min:x_max] for paf in (pafa, pafb)]
+                xs = np.arange(x_min, x_max)
+                ys = np.arange(y_min, y_max)[:, np.newaxis]
+
+                v0, v1 = xs - x_center1, ys - y_center1
+                dist = abs(v0 * line[1] - v1 * line[0])
+                idxs = dist < threshold
+
+                pafa[y_min:y_max, x_min:x_max][idxs] = line[0]
+                pafb[y_min:y_max, x_min:x_max][idxs] = line[1]
+
+        return target, pafs,target_weight
+
+    # def __generate_target_heatmap__(self, joints, joints_vis):
+    #     '''
+    #     :param joints:  [[num_joints, 3]]
+    #     :param joints_vis: [num_joints, 3]
+    #     :return: target, target_weight(1: visible, 0: invisible)
+    #     '''
+    #     nposes = len(joints)
+    #     num_joints = self.num_joints
+    #     target_weight = np.zeros((num_joints, 1), dtype=np.float32)
+    #     for i in range(num_joints):
+    #         for n in range(nposes):
+    #             if joints_vis[n][i, 0] == 1:
+    #                 target_weight[i, 0] = 1
+
+    #     target = np.zeros(
+    #         (num_joints, self.heatmap_size[1], self.heatmap_size[0]),
+    #         dtype=np.float32)
+    #     feat_stride = self.input_size / self.heatmap_size
+
+    #     for n in range(nposes):
+    #         human_scale = 2 * self.__compute_human_scale__(joints[n] / feat_stride, joints_vis[n]) # TODO: compute human scale
+    #         if human_scale == 0:
+    #             continue
+
+    #         cur_sigma = self.sigma * np.sqrt((human_scale / (96.0 * 96.0)))
+    #         tmp_size = cur_sigma * 3
+    #         for joint_id in range(num_joints):
+    #             feat_stride = self.input_size / self.heatmap_size
+    #             mu_x = int(joints[n][joint_id][0] / feat_stride[0])
+    #             mu_y = int(joints[n][joint_id][1] / feat_stride[1])
+    #             ul = [int(mu_x - tmp_size), int(mu_y - tmp_size)]
+    #             br = [int(mu_x + tmp_size + 1), int(mu_y + tmp_size + 1)]
+    #             if joints_vis[n][joint_id, 0] == 0 or \
+    #                     ul[0] >= self.heatmap_size[0] or \
+    #                     ul[1] >= self.heatmap_size[1] \
+    #                     or br[0] < 0 or br[1] < 0:
+    #                 continue
+
+    #             size = 2 * tmp_size + 1
+    #             x = np.arange(0, size, 1, np.float32)
+    #             y = x[:, np.newaxis]
+    #             x0 = y0 = size // 2
+    #             g = np.exp(
+    #                 -((x - x0)**2 + (y - y0)**2) / (2 * cur_sigma**2))
+
+    #             # Usable gaussian range
+    #             g_x = max(0,
+    #                         -ul[0]), min(br[0], self.heatmap_size[0]) - ul[0]
+    #             g_y = max(0,
+    #                         -ul[1]), min(br[1], self.heatmap_size[1]) - ul[1]
+    #             # Image range
+    #             img_x = max(0, ul[0]), min(br[0], self.heatmap_size[0])
+    #             img_y = max(0, ul[1]), min(br[1], self.heatmap_size[1])
+
+    #             target[joint_id][img_y[0]:img_y[1], img_x[0]:img_x[1]] = np.maximum(target[joint_id][img_y[0]:img_y[1], img_x[0]:img_x[1]],
+    #                 g[g_y[0]:g_y[1], g_x[0]:g_x[1]])
+    #         target = np.clip(target, 0, 1)
+
+    #     return target, target_weight
 
     def __compute_human_scale__ (self, pose, joints_vis):
         idx = joints_vis[:, 0] == 1

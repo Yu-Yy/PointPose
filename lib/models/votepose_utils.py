@@ -145,6 +145,7 @@ class VotePoseVoting(nn.Module):
         batch_size = seed_xyz.shape[0]
         num_seed = seed_xyz.shape[1]
         num_vote = num_seed*self.vote_factor
+
         net = F.relu(self.bn1(self.conv1(seed_features))) 
         net = F.relu(self.bn2(self.conv2(net))) 
         net = self.conv3(net) # (batch_size, (3+out_dim)*vote_factor, num_seed)
@@ -165,13 +166,13 @@ class VotePoseVoting(nn.Module):
 def decode_scores(net, end_points):
     net_transposed = net.transpose(2,1) # (batch_size, 1024, ..)
     batch_size = net_transposed.shape[0]
-    num_proposal = net_transposed.shape[1]
+    num_proposal = net_transposed.shape[1] # predicted residue
 
     objectness_scores = net_transposed[:,:,0:2]
     end_points['objectness_scores'] = objectness_scores
     
     base_xyz = end_points['aggregated_vote_xyz'] # (batch_size, num_proposal, 3)
-    center = base_xyz + net_transposed[:,:,2:5] # (batch_size, num_proposal, 3)
+    center = base_xyz + net_transposed[:,:,2:5] # (batch_size, num_proposal, 3)  
     end_points['center'] = center # with batch size
     return end_points
 
@@ -342,6 +343,327 @@ def get_loss(end_points, gt_points):
     
     end_points['total_loss'] = total_loss
     return total_loss, end_points
+
+## version 2
+class VotePoseBackbone_(nn.Module):
+    r"""
+       Backbone network for point cloud feature learning.
+       Based on Pointnet++ single-scale grouping network. 
+        
+       Parameters
+       ----------
+       input_feature_dim: int
+            Number of input channels in the feature descriptor for each point.
+            e.g. 3 for RGB.
+    """
+    def __init__(self, input_feature_dim=0):
+        super().__init__()
+
+        self.sa1 = PointnetSAModuleVotes(
+                npoint=2048,
+                radius=0.1,
+                nsample=64,
+                mlp=[input_feature_dim, 64, 64, 128],
+                use_xyz=True,
+                normalize_xyz=True
+            )
+
+        self.sa2 = PointnetSAModuleVotes(
+                npoint=1024,
+                radius=0.2,
+                nsample=32,
+                mlp=[128, 128, 128, 256],
+                use_xyz=True,
+                normalize_xyz=True
+            )
+
+        self.sa3 = PointnetSAModuleVotes(
+                npoint=512,
+                radius=0.3,
+                nsample=16,
+                mlp=[256, 128, 128, 256],
+                use_xyz=True,
+                normalize_xyz=True
+            )
+
+        self.sa4 = PointnetSAModuleVotes(
+                npoint=256,
+                radius=0.4,
+                nsample=16,
+                mlp=[256, 128, 128, 256],
+                use_xyz=True,
+                normalize_xyz=True
+            )
+
+        self.fp1 = PointnetFPModule(mlp=[256+256,256,256])
+        self.fp2 = PointnetFPModule(mlp=[256+256,256,256])
+
+    def _break_up_pc(self, pc):
+        xyz = pc[..., 0:3].contiguous()
+        features = (
+            pc[..., 3:].transpose(1, 2).contiguous()
+            if pc.size(-1) > 3 else None
+        )
+
+        return xyz, features
+
+    def forward(self, pointcloud: torch.cuda.FloatTensor, end_points=None):
+        r"""
+            Forward pass of the network
+
+            Parameters
+            ----------
+            pointcloud: Variable(torch.cuda.FloatTensor)
+                (B, N, 3 + input_feature_dim) tensor
+                Point cloud to run predicts on
+                Each point in the point-cloud MUST
+                be formated as (x, y, z, features...)
+
+            Returns
+            ----------
+            end_points: {XXX_xyz, XXX_features, XXX_inds}
+                XXX_xyz: float32 Tensor of shape (B,K,3)
+                XXX_features: float32 Tensor of shape (B,K,D)
+                XXX-inds: int64 Tensor of shape (B,K) values in [0,N-1]
+        """
+        if not end_points: end_points = {}
+        batch_size = pointcloud.shape[0]
+
+        xyz, features = self._break_up_pc(pointcloud)
+
+        # --------- 4 SET ABSTRACTION LAYERS ---------
+        xyz, features, fps_inds = self.sa1(xyz, features)
+        end_points['sa1_inds'] = fps_inds
+        end_points['sa1_xyz'] = xyz
+        end_points['sa1_features'] = features
+
+        xyz, features, fps_inds = self.sa2(xyz, features) # this fps_inds is just 0,1,...,1023
+        end_points['sa2_inds'] = fps_inds
+        end_points['sa2_xyz'] = xyz
+        end_points['sa2_features'] = features
+
+        xyz, features, fps_inds = self.sa3(xyz, features) # this fps_inds is just 0,1,...,511
+        end_points['sa3_xyz'] = xyz
+        end_points['sa3_features'] = features
+
+        xyz, features, fps_inds = self.sa4(xyz, features) # this fps_inds is just 0,1,...,255
+        end_points['sa4_xyz'] = xyz
+        end_points['sa4_features'] = features
+
+        # --------- 2 FEATURE UPSAMPLING LAYERS --------
+        features = self.fp1(end_points['sa3_xyz'], end_points['sa4_xyz'], end_points['sa3_features'], end_points['sa4_features'])
+        features = self.fp2(end_points['sa2_xyz'], end_points['sa3_xyz'], end_points['sa2_features'], features)
+        end_points['fp2_features'] = features
+        end_points['fp2_xyz'] = end_points['sa2_xyz']
+        num_seed = end_points['fp2_xyz'].shape[1]
+        end_points['fp2_inds'] = end_points['sa1_inds'][:,0:num_seed] # indices among the entire input point clouds
+        return end_points
+
+
+
+
+class VotePoseVoting_(nn.Module):
+    def __init__(self, vote_factor, seed_feature_dim):
+        """ Votes generation from seed point features.
+
+        Args:
+            vote_facotr: int
+                number of votes generated from each seed point
+            seed_feature_dim: int
+                number of channels of seed point features
+            vote_feature_dim: int
+                number of channels of vote features
+        """
+        super().__init__()
+        self.vote_factor = vote_factor
+        self.in_dim = seed_feature_dim
+        self.out_dim = self.in_dim # due to residual feature, in_dim has to be == out_dim
+        self.conv1 = torch.nn.Conv1d(self.in_dim, self.in_dim, 1)
+        self.conv2 = torch.nn.Conv1d(self.in_dim, self.in_dim, 1)
+        self.conv3 = torch.nn.Conv1d(self.in_dim, (3+self.out_dim) * self.vote_factor, 1) # vote 19 分支 # TODO: discription ability doublt
+        self.bn1 = torch.nn.BatchNorm1d(self.in_dim)
+        self.bn2 = torch.nn.BatchNorm1d(self.in_dim)
+        
+    def forward(self, seed_xyz, seed_features):
+        """ Forward pass.
+
+        Arguments:
+            seed_xyz: (batch_size, num_seed, 3) Pytorch tensor
+            seed_features: (batch_size, feature_dim, num_seed) Pytorch tensor
+        Returns:
+            vote_xyz: (batch_size, num_seed*vote_factor, 3)
+            vote_features: (batch_size, vote_feature_dim, num_seed*vote_factor)
+        """
+        batch_size = seed_xyz.shape[0]
+        num_seed = seed_xyz.shape[1]
+        num_vote = num_seed*self.vote_factor
+        net = F.relu(self.bn1(self.conv1(seed_features))) 
+        net = F.relu(self.bn2(self.conv2(net))) 
+        net = self.conv3(net) # (batch_size, (3+out_dim)*vote_factor, num_seed)
+        #print(seed_xyz.shape, seed_features.shape)
+        #print(net.shape)
+        net = net.transpose(2,1).view(batch_size, num_seed, self.vote_factor, 3+self.out_dim)
+        # import pdb; pdb.set_trace()
+        offset = net[:,:,:,0:3]
+        vote_xyz = seed_xyz.unsqueeze(2) + offset # 同一个特征基础上直接归19类？
+        #vote_xyz = vote_xyz.contiguous().view(batch_size, num_vote, 3)
+        #vote_xyz = vote_xyz.transpose(2,1).contiguous()
+
+        residual_features = net[:,:,:,3:] # (batch_size, num_seed, vote_factor, out_dim)
+        vote_features = seed_features.transpose(2,1).unsqueeze(2) + residual_features # (B,seeds, factor, outdim)
+        #vote_features = vote_features.contiguous().view(batch_size, num_vote, self.out_dim)
+        vote_features = vote_features.transpose(1,3).contiguous()  # (B,outdim, factor,seeds)
+        
+        return vote_xyz, vote_features
+
+class VotePoseProposal_(nn.Module):
+    def __init__(self, num_proposal, sampling, vote_factor, seed_feat_dim=256):
+        super().__init__() 
+
+        self.num_proposal = num_proposal
+        self.sampling = sampling
+        self.seed_feat_dim = seed_feat_dim
+        self.vote_factor = vote_factor
+        # Vote clustering
+        self.vote_aggregation = PointnetSAModuleVotes( 
+                npoint=self.num_proposal,
+                radius=0.15,  # for 0.1
+                nsample=128,
+                mlp=[self.seed_feat_dim, 128, 128, 128],
+                use_xyz=True,
+                normalize_xyz=True
+            )
+
+        # Object proposal/detection
+        # Objectness scores (2), center residual (3),
+        # heading class+residual (num_heading_bin*2), size class+residual(num_size_cluster*4)
+        self.conv1 = torch.nn.Conv1d(128,128,1)
+        self.conv2 = torch.nn.Conv1d(128,128,1)
+        self.conv_op = torch.nn.ModuleList([torch.nn.Conv1d(128,2+3,1) for i in range(vote_factor)])
+        #self.conv3 = torch.nn.Conv1d(128,2+3,1)
+        self.bn1 = torch.nn.BatchNorm1d(128)
+        self.bn2 = torch.nn.BatchNorm1d(128)
+
+    def forward(self, xyz, features, end_points):
+        """
+        Args:
+            xyz: (B,M,19,3)
+            features: (B,C,19,M)
+        Returns:
+            scores: (B,num_proposal,2+3+NH*2+NS*4) 
+        """
+        # Farthest point sampling (FPS) on votes
+        xyz_ =[]
+        features_ = []
+        center_list = []
+        for k in range(self.vote_factor): # divide in different joints and run the same network
+            xyz_k, features_k, fps_inds = self.vote_aggregation(xyz[:,:,k,:].contiguous(), features[:,:,k,:].contiguous())
+            net = F.relu(self.bn1(self.conv1(features_k)))
+        
+            net = F.relu(self.bn2(self.conv2(net))) 
+        
+            net = self.conv_op[k](net) # (batch_size, 2+3, num_proposal)
+            objectness_scores, center = decode_scores_(net, xyz_k)
+            xyz_.append(xyz_k)
+            features_.append(features_k)
+            center_list.append({'obj_score':objectness_scores, 'center':center})  # center batch * num_p * 3
+                
+        xyz_ = torch.stack(xyz_,dim = 1) #[batch, vote_factor, num_proposal, 3]
+        features_ = torch.stack(features_,dim = 1) #[batch, vote_factor, feature_dim, 3]
+        
+        end_points['aggregated_vote_xyz'] = xyz_ # [batch, vote_factor, num_proposal, 3]
+        end_points['center_list'] = center_list 
+        return end_points
+
+def decode_scores_(net, xyz):
+    net_transposed = net.transpose(2,1) # (batch_size, 1024, ..)
+    batch_size = net_transposed.shape[0]
+    num_proposal = net_transposed.shape[1]
+
+    objectness_scores = net_transposed[:,:,0:2]
+
+    base_xyz = xyz 
+    center = base_xyz + net_transposed[:,:,2:5] # (batch_size, num_proposal, 3)
+    return objectness_scores, center
+
+def compute_vote_loss_(end_points, gt_points):
+    #gt_points:[B,num_joints,M,3]
+    seed_xyz = end_points['seed_xyz'] # if for seed loss, 
+    #[B,N,3]
+    vote_xyz = end_points['vote_xyz']
+    device = seed_xyz.device
+    batch_size, num_joints = vote_xyz.shape[0], vote_xyz.shape[2]
+    shift_loss = 0
+    for k in range(num_joints):
+        xyz_k = vote_xyz[:,:,k,:]
+        gt_k = gt_points[:,:,k,:]
+        dist1, ind1, dist2, ind2 = nn_distance(seed_xyz, gt_k) # using the seed to judge its corresponding class
+        positive_mask = (dist1 <= 0.25 * 0.25).unsqueeze(2).repeat([1,1,3])  #0.25m内的vote点  # access illegal memory position
+        
+        gt_vote_k = []
+        for b in range(batch_size):
+            gt_vote_k.append(gt_k[b:b+1,ind1[b],...])
+        gt_vote_k = torch.cat(gt_vote_k,dim=0)
+        shift_distance = (xyz_k - gt_vote_k) * positive_mask
+        
+        shift_loss += torch.mean(torch.norm(shift_distance,dim=2))
+
+    return shift_loss
+
+def compute_proposal_loss_(end_points, gt_points):
+    #gt_points:[B,num_joints,M,3]
+    _, _, num_joints = gt_points.shape[0:3]  # 
+    device = gt_points.device
+    center_list = end_points['center_list']
+    assert len(center_list) == num_joints
+    criterion = nn.CrossEntropyLoss()
+    distance_loss = torch.tensor(0).float().to(device)
+    objectness_loss = torch.tensor(0).float().to(device)
+    for k,center_dict in enumerate(center_list):
+        gt_k = gt_points[:,:,k,:]
+        center_proposal = center_dict['center']
+        objectness_proposal = center_dict['obj_score']
+        #print(center_proposal.shape)
+        dist1, ind1, dist2, ind2 = nn_distance(center_proposal, gt_k)
+        positive_mask = (dist1 <= 0.15 * 0.15)
+        objectness_loss += criterion(objectness_proposal.reshape(-1,2), positive_mask.reshape(-1).long()) # Problem emerged 
+        if torch.sum(positive_mask) != 0:
+            # objectness_loss += criterion(objectness_proposal.reshape(-1,2), positive_mask.reshape(-1).long()) # Problem emerged  # assure there are multiple class input
+            distance_loss += torch.mean(dist1[positive_mask])
+        else:
+            # vote_pose_mask = (dist1 <= 0.25*0.25)
+            # objectness_loss += criterion(objectness_proposal.reshape(-1,2), positive_mask.reshape(-1).long()) # Problem emerged 
+            distance_loss += torch.mean(dist1) # 
+    return objectness_loss, distance_loss
+
+def get_loss_(end_points, gt_points):
+    # endpoints:[B,N,3]
+    # gt_points:[B,M,3]
+
+    # Vote loss
+    vote_loss = compute_vote_loss_(end_points, gt_points)
+    
+    end_points['vote_loss'] = vote_loss
+
+    objectness_loss, distance_loss = compute_proposal_loss_(end_points, gt_points)
+    #import pdb; pdb.set_trace()
+    end_points['objectness_loss'] = objectness_loss
+    end_points['distance_loss'] = distance_loss
+    # if ~distance_loss:
+    #     total_loss = vote_loss + objectness_loss
+    # else:
+
+    if distance_loss == 0:
+        total_loss = vote_loss + objectness_loss
+    else:
+        total_loss = vote_loss + objectness_loss + distance_loss
+    
+    end_points['total_loss'] = total_loss
+    return total_loss, end_points
+
+
+
+
 
 
 def huber_loss(error, delta=1.0):

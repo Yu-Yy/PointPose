@@ -45,7 +45,7 @@ from utils.utils import load_backbone_panoptic
 import dataset  # a new depth dataset
 import models
 
-from dataset.panoptic_depth_multview import Panoptic_Depth
+from dataset.panoptic_depth import Panoptic_Depth
 
 def ommit_collate_fn(batch):
     # import pdb; pdb.set_trace()
@@ -54,7 +54,6 @@ def ommit_collate_fn(batch):
     batch = list(filter(lambda x: None not in x, batch))
     if len(batch) == 0: return torch.Tensor()
     return default_collate(batch)
-
 
 
 def parse_args():
@@ -91,8 +90,8 @@ def main():
     logger.info(pprint.pformat(args))
     logger.info(pprint.pformat(config))
 
-    gpus = [int(i) for i in config.GPUS.split(',')] # 多卡
-    print('=> Loading data ..')
+    gpus = [int(i) for i in config.GPUS.split(',')] # 多卡 
+    
     normalize = transforms.Normalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]) # RGB image processing
     train_dataset = eval('dataset.' + config.DATASET.TRAIN_DATASET)(config,
@@ -141,8 +140,15 @@ def main():
     metrics_load = dict()
     best_abs_rel = 100     # TODO: load the corresponding metric using a1
     # no pretrained model loaded # not using pretrained model
-    # if config.NETWORK.PRETRAINED_BACKBONE: # no pretrained test   
-    #     model = load_backbone_panoptic(model, config.NETWORK.PRETRAINED_BACKBONE) # load backbone # not change
+    if config.NETWORK.PRETRAINED_BACKBONE: # no pretrained test   
+        print('Using backbone')
+        model = load_backbone_panoptic(model, config.NETWORK.PRETRAINED_BACKBONE) # load backbone # not change
+    
+    # test model loading
+    # model_file = '/home/panzhiyu/project/3d_pose/voxelpose-pytorch/output_mul_0408_paf/panoptic_depth/hrnet_adabins_50/depth_est/final_state.pth.tar'
+    # pretrained_state_dict = torch.load(model_file)
+    # model.module.load_state_dict(pretrained_state_dict)
+
     if config.TRAIN.RESUME:
         start_epoch, model, optimizer, metrics_load = load_checkpoint_depth(model, optimizer, final_output_dir) # TODO: Load the A1 metrics
         best_abs_rel = metrics_load['abs_rel']
@@ -164,14 +170,14 @@ def main():
         print('Epoch: {}'.format(epoch))
         # lr_scheduler.step()
         
-        train_depth(config, model, optimizer, train_loader, epoch, final_output_dir, writer_dict)
+        train_depth(config, model, optimizer, train_loader, epoch, final_output_dir, writer_dict, logger=logger)
         if epoch % 2 ==  0:
             model_name =os.path.join(final_output_dir,
                                           f'epoch{epoch}_state.pth.tar')
             logger.info('saving current model state to {}'.format(
                 model_name))
             torch.save(model.module.state_dict(), model_name)
-        metrics = validate_depth(config, model, test_loader, final_output_dir,epoch)
+            metrics = validate_depth(config, model, test_loader, final_output_dir,epoch, logger=logger) # test gapping
         
 
         # get the abs_rel

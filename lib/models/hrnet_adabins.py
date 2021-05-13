@@ -15,22 +15,28 @@ class HrnetAdaptiveBins(nn.Module):
         # self.encoder = Encoder(backend)
         self.backbone = backend # extracting features        
         # depth header
+        embedding_dim = 128
+        self.uncertainty_out = nn.Sequential(nn.Conv2d(cfg.MODEL_EXTRA.STAGE4.NUM_CHANNELS[0], embedding_dim, kernel_size=3, stride=1, padding=1),
+                                            nn.LeakyReLU(),nn.Conv2d(embedding_dim, 1, kernel_size=3, stride=1, padding=1))
         self.depth_header = eval('DepthEstimation.build')( # hrnet_adabins.build
                         cfg, cfg.BINS)
         self.PM_header = PoseMaskEstimation(cfg, basicM_num=1)
+
 
     def forward(self, x, **kwargs):
         # unet_out = self.decoder(self.encoder(x), **kwargs) # 128通道特征输出，batch 128 h/2 w/2
         # import pdb; pdb.set_trace()
         hrnet_out = self.backbone(x) # 维度输出有问题
         # FEATURE output channel fixed
-        bin_edges, pred = self.depth_header(hrnet_out)
+        bin_edges, pred = self.depth_header(hrnet_out)  # ,probability
+
+        probability = self.uncertainty_out(hrnet_out)
         # mask and poseH output
-        heatmap, mask_prob = self.PM_header(hrnet_out)
+        paf_pred, heatmap, mask_prob = self.PM_header(hrnet_out)
 
         # calculate the loss and get into the votenet 
 
-        return bin_edges, pred, heatmap, mask_prob, hrnet_out
+        return bin_edges, pred, probability, heatmap, paf_pred, mask_prob, hrnet_out  #
 
     @classmethod
     def build(cls, cfg, is_train, **kwargs):

@@ -51,35 +51,35 @@ class get_3d_points(nn.Module):
         self.orig_W = orig_W
         self.orig_H = orig_H
 
-    def forward(self, pred_depth, filter_mask, K_matrix, M_matrix,diff, trans_matrix, total_points, feature_input, metric=100):
+    def forward(self, pred_depth, filter_mask, K_matrix, M_matrix,diff, trans_matrix, total_points, total_vectors,feature_input, metric=100):
         pred_depth = pred_depth.squeeze(1)
         _,C,_,_ = feature_input.shape
         B,H,W = pred_depth.shape
-        num_joints = len(filter_mask)
+        # num_joints = len(filter_mask)
         K_matrix = K_matrix.clone().detach()
         M_matrix = M_matrix.clone().detach()
         diff = diff.clone().detach()
         diff = diff.unsqueeze(2) # for multi
         trans_matrix = trans_matrix.clone().detach()
-        x_cor, y_cor = torch.meshgrid(torch.arange(W), torch.arange(H))
+        x_cor, y_cor = torch.meshgrid(torch.arange(W).to(self.device), torch.arange(H).to(self.device))
+        # x_cor = x_cor.to(self.device)
+        # y_cor = y_cor.to(self.device)
         x_cor = x_cor + 71 # for cropping
         x_cor = x_cor.transpose(0,1)
         y_cor = y_cor.transpose(0,1)
-        x_cor = x_cor.to(self.device)
-        y_cor = y_cor.to(self.device)
         x_cor = x_cor * (self.orig_W / (480)) # TODO: this is for croping size!
         y_cor = y_cor * (self.orig_H / H)
         x_cor = x_cor.reshape(-1,1)
         y_cor = y_cor.reshape(-1,1)
         cor_2d = torch.cat([x_cor,y_cor,torch.ones(x_cor.shape[0],1).to(self.device)],dim=-1).transpose(0,1)
+        # 2D coordinate
         cor_2d_batch = cor_2d.unsqueeze(0).repeat(B,1,1)
-        norm_2d = torch.bmm(torch.inverse(K_matrix), cor_2d_batch.double()) # access illegal memory?
+        norm_2d = torch.bmm(torch.inverse(K_matrix).float(), cor_2d_batch) # .double() 
         norm_2d = norm_2d.permute([0,2,1])
         x_cor_depth = norm_2d[...,0:1]
         x_cor_bak = x_cor_depth.clone().detach()
         y_cor_depth = norm_2d[...,1:2]
         y_cor_bak = y_cor_depth.clone().detach()
-        # import pdb; pdb.set_trace()
 
         for _ in range(5):
             r2 = x_cor_depth * x_cor_depth + y_cor_depth * y_cor_depth
@@ -91,36 +91,70 @@ class get_3d_points(nn.Module):
             y_cor_depth = (y_cor_bak - deltaY) *icdist
         
         depth_proc = pred_depth.reshape(B,-1,1)
-        x_cor_depth = x_cor_depth * depth_proc
-        y_cor_depth = y_cor_depth * depth_proc
-        # depth_cam = np.concatenate([x_cor_depth,y_cor_depth,depth_proc,np.ones(x_cor_depth.shape)],axis=-1)
-        depth_cam = torch.cat([x_cor_depth, y_cor_depth,depth_proc,torch.ones(x_cor_depth.shape).to(self.device)],dim=-1)
+        # generate one random depth for vector calculation
+        depth_ge = 5 * torch.rand(depth_proc.shape).to(self.device)
 
-        point_3D = torch.bmm(torch.inverse(M_matrix), depth_cam.permute([0,2,1]))
+
+        x_cor_depth_tr = x_cor_depth * depth_proc
+        y_cor_depth_tr = y_cor_depth * depth_proc
+        # depth_cam = np.concatenate([x_cor_depth,y_cor_depth,depth_proc,np.ones(x_cor_depth.shape)],axis=-1)
+        # import pdb; pdb.set_trace()
+        # true value
+        depth_cam = torch.cat([x_cor_depth_tr.float(), y_cor_depth_tr.float(),depth_proc,torch.ones(x_cor_depth_tr.shape).to(self.device)],dim=-1)
+
+        point_3D = torch.bmm(torch.inverse(M_matrix).float(), depth_cam.permute([0,2,1]))
         # point_3D = np.linalg.pinv(M_depth) @ depth_cam.transpose()
         # point_3d = point_3D[:3,:].transpose()
-        point_panoptic = torch.bmm(trans_matrix, point_3D) / metric 
+        point_panoptic = torch.bmm(trans_matrix.float(), point_3D) / metric 
         point_panoptic = point_panoptic[:,:3,:].permute([0,2,1])
-        
+
+        # generate sync value
+        x_cor_depth_ge = x_cor_depth * depth_ge
+        y_cor_depth_ge = y_cor_depth * depth_ge
+        depth_cam_ge = torch.cat([x_cor_depth_ge.float(), y_cor_depth_ge.float(),depth_ge,torch.ones(x_cor_depth_ge.shape).to(self.device)],dim=-1)
+
+        point_3D_ge = torch.bmm(torch.inverse(M_matrix).float(), depth_cam_ge.permute([0,2,1]))
+        # point_3D = np.linalg.pinv(M_depth) @ depth_cam.transpose()
+        # point_3d = point_3D[:3,:].transpose()
+        point_panoptic_ge = torch.bmm(trans_matrix.float(), point_3D_ge) / metric 
+        point_panoptic_ge = point_panoptic_ge[:,:3,:].permute([0,2,1])  # B * N * 3
+
+        # generate the vector
+        projected_vector = point_panoptic_ge - point_panoptic
+        projected_vector = projected_vector / torch.norm(projected_vector, dim=-1, keepdim=True) 
+        # import pdb; pdb.set_trace()
+
         # batch_points = []
         feature_input = feature_input.reshape(B,C,-1)
         feature_input = feature_input.permute([0,2,1])
-        # import pdb; pdb.set_trace()
 
-        for hm_idx in range(num_joints):
-            mask_filt = filter_mask[hm_idx].reshape(B,-1,1)
-            for b in range(B):
-                batch_point_3d = point_panoptic[b]
-                batch_feature = feature_input[b]
-                i_idx,j_idx = torch.where(mask_filt[b] == 1)
-                filter_point_b = batch_point_3d[i_idx]
-                filter_feature_b = batch_feature[i_idx]
-                # combine the feature part
-                filter_pc = torch.cat([filter_point_b,filter_feature_b],dim = -1)
-                total_points[hm_idx][b].append(filter_pc)
-                # batch_points.append(filter_point_b.unsqueeze(0))
+        # for hm_idx in range(num_joints):
+        #     mask_filt = filter_mask[hm_idx].reshape(B,-1,1)
+        #     for b in range(B):
+        #         batch_point_3d = point_panoptic[b]
+        #         batch_feature = feature_input[b]
+        #         i_idx,j_idx = torch.where(mask_filt[b] == 1)
+        #         filter_point_b = batch_point_3d[i_idx]
+        #         filter_feature_b = batch_feature[i_idx]
+        #         # combine the feature part
+        #         filter_pc = torch.cat([filter_point_b,filter_feature_b],dim = -1)
+        #         total_points[hm_idx][b].append(filter_pc)
+        mask_filt = filter_mask.reshape(B,-1,1)
+        for b in range(B):
+            batch_point_3d = point_panoptic[b]
+            batch_feature = feature_input[b]
+            batch_vector = projected_vector[b]
+            i_idx,j_idx = torch.where(mask_filt[b] == 1)
+            filter_point_b = batch_point_3d[i_idx]
+            filter_feature_b = batch_feature[i_idx]
+            filter_vector_b = batch_vector[i_idx]
+            # combine the feature part
+            filter_pc = torch.cat([filter_point_b.float(),filter_feature_b],dim = -1)
+            total_points[b].append(filter_pc)
+            total_vectors[b].append(filter_vector_b)
 
-        return total_points
+
+        return total_points, total_vectors
 
 
 

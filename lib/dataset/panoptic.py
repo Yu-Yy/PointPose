@@ -312,7 +312,7 @@ class Panoptic(JointsDataset):
             for pose in pred:
                 mpjpes = []
                 for (gt, gt_vis) in zip(joints_3d, joints_3d_vis):
-                    vis = gt_vis[:, 0] > 0
+                    vis = gt_vis[:, 0] > 0   # 只计算vis 为正的点
                     mpjpe = np.mean(np.sqrt(np.sum((pose[vis, 0:3] - gt[vis]) ** 2, axis=-1)))
                     mpjpes.append(mpjpe)
                 min_gt = np.argmin(mpjpes)

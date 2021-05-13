@@ -8,8 +8,6 @@ import os
 import copy
 import pickle
 
-
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -17,18 +15,31 @@ import numpy as np
 from torch.nn.functional import interpolate
 from depth_core.loss import SILogLoss, BinsChamferLoss, PerJointMSELoss, CrossEntropyMaskLoss, SILogLoss_grad, foreground_depth_loss
 from depth_core.utils_depth import RunningAverage, compute_errors, RunningAverageDict, grad_generation, erode_generation, get_3d_points
-
-
+# define the connection
+CONNS =  [[0, 1],
+         [0, 2],
+         [0, 3],
+         [3, 4],
+         [4, 5],
+         [0, 9],
+         [9, 10],
+         [10, 11],
+         [2, 6],
+         [2, 12],
+         [6, 7],
+         [7, 8],
+         [12, 13],
+         [13, 14]]
 # from models.hrnet_adabins import HrnetAdaptiveBins
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-import open3d as o3d
+# import open3d as o3d
 import cv2
 
 logger = logging.getLogger(__name__)
 
 
-def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict, device=torch.device('cuda'), dtype=torch.float):
+def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict, device=torch.device('cuda'), dtype=torch.float, logger=logger):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -36,59 +47,67 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
     losses_hm = AverageMeter()
     losses_mask = AverageMeter()
     losses_fore_depth = AverageMeter()
+    losses_paf = AverageMeter()
     
     criterion_hm = PerJointMSELoss().cuda()
+    criterion_paf = PerJointMSELoss().cuda()
     criterion_dense = SILogLoss().cuda()
     criterion_dense_attention = SILogLoss().cuda()
     criterion_chamfer = BinsChamferLoss().cuda()
     criterion_mask = CrossEntropyMaskLoss().cuda()
-    criterion_grad = SILogLoss_grad().cuda()
+    # criterion_grad = SILogLoss_grad().cuda()
     criterion_fore_depth = foreground_depth_loss().cuda()
 
     model.train()
+    
+    number_joints = config.NETWORK.NUM_JOINTS
 
     end = time.time()
     # multi_loader_training shelf and cmu
     for i, batch in enumerate(loader): # 
         if len(batch) == 0:
             continue
-        image, depth, mask_gt, hm_gt, wt_gt = batch
+        image, depth, mask_gt, hm_gt, wt_gt, paf_gt = batch
         image = image.to(device)
         depth = depth.to(device)
         mask_gt = mask_gt.to(device)
         hm_gt = hm_gt.to(device)
         wt_gt = wt_gt.to(device)
-
+        paf_gt = paf_gt.to(device)
+        
         # import pdb; pdb.set_trace()
-        bin_edges, pred, heatmap, mask_prob = model(image) # depth is in half resolution
+        bin_edges, pred, depth_uncertainty ,heatmap, paf_pred, mask_prob, feature_out = model(image) # depth is in half resolution
 
         # depth loss
         depth_mask = depth > config.DATASET.MIN_DEPTH
         attention_mask = depth_mask * mask_gt
-        l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True)
+        l_dense = criterion_dense(pred, depth_uncertainty,depth, mask=depth_mask.to(torch.bool), interpolate=True)
         # add one heatmap mask to pay more attention to the keypoint position
 
 
-        l_dense_attention = criterion_dense_attention(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
+        l_dense_attention = criterion_dense_attention(pred, depth_uncertainty,depth, mask=attention_mask.to(torch.bool), interpolate=True)
         l_chamfer = criterion_chamfer(bin_edges, depth.float())
-        l_grad = criterion_grad(pred, depth.detach().float(), mask=attention_mask.to(torch.bool), interpolate=True) # do not add this loss 
+        # l_grad = criterion_grad(pred, depth.detach().float(), mask=attention_mask.to(torch.bool), interpolate=True) # do not add this loss 
         # print(l_grad)
 
         l_fore_depth =criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
         losses_fore_depth.update(l_fore_depth.item())
 
         loss_depth = l_dense + 0.1 * l_chamfer +  l_dense_attention # pay more attention to the  #+ 2e-3 * l_grad # pay attention to the foreground and control the grad
-        losses_depth.update(loss_depth.item())
+        losses_depth.update(loss_depth.item())  # attention avaliable (not to be no response)
 
         # hm loss
-        loss_hm = criterion_hm(heatmap, hm_gt, mask_gt ,True, wt_gt)
+        # loss_hm = criterion_hm(heatmap, hm_gt, mask_gt ,True, wt_gt)
+        loss_hm = criterion_hm(heatmap, hm_gt, mask_gt, False) # no vis label
         losses_hm.update(loss_hm.item() * 50)
-
+        # paf loss 
+        loss_paf = criterion_paf(paf_pred, paf_gt, mask_gt, False)
+        losses_paf.update(loss_paf.item() * 50)
         # mask loss
         loss_mask = criterion_mask(mask_prob, mask_gt.long())
         losses_mask.update(loss_mask.item() * 5)
 
-        loss = loss_depth + 50 * loss_hm + loss_mask * 5
+        loss = loss_depth + 50 * loss_hm + loss_mask * 5 + loss_paf * 50
         losses.update(loss.item())
 
         optimizer.zero_grad()
@@ -108,12 +127,13 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
                   'Loss: {loss.val:.6f} ({loss.avg:.6f})\t' \
                   'Loss_depth: {loss_2d.val:.7f} ({loss_2d.avg:.7f})\t' \
                   'Loss_hm: {loss_3d.val:.7f} ({loss_3d.avg:.7f})\t' \
+                  'Loss_paf: {loss_paf.val:.7f} ({loss_paf.avg:.7f})\t' \
                   'Loss_mask: {loss_cord.val:.6f} ({loss_cord.avg:.6f})\t' \
                   'Loss_fore_depth: {loss_fore_depth.val:.6f}({loss_fore_depth.avg:.6f})\t' \
                   'Memory {memory:.1f}'.format(
                     epoch, i, len(loader), batch_time=batch_time,
                     speed=image.size(0) / batch_time.val,
-                    data_time=data_time, loss=losses, loss_2d=losses_depth, loss_3d=losses_hm, loss_fore_depth = losses_fore_depth,
+                    data_time=data_time, loss=losses, loss_2d=losses_depth, loss_3d=losses_hm, loss_fore_depth = losses_fore_depth, loss_paf = losses_paf,
                     loss_cord=losses_mask, memory=gpu_memory_usage)
             logger.info(msg)
 
@@ -122,11 +142,12 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
             writer.add_scalar('train_loss', losses.val, global_steps)
             writer.add_scalar('train_loss_mask', losses_mask.val, global_steps)
             writer.add_scalar('train_loss_hm', losses_hm.val, global_steps)
+            writer.add_scalar('train_loss_paf', losses_paf.val, global_steps)
             writer.add_scalar('train_loss_depth', losses_depth.val, global_steps)
             writer_dict['train_global_steps'] = global_steps + 1
 
             # debug file
-            if i % 1500 == 0:
+            if i % 1000 == 0:
                 # save fig
                 pred = nn.functional.interpolate(pred, depth.shape[-2:], mode='bilinear', align_corners=True)
                 pred = pred.detach().cpu().numpy()
@@ -138,12 +159,14 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
                 vis_depth = pred[0,0,...]
                 temp_mask = mask_prob[0,0,...].detach().cpu().numpy()
                 vis_mask = (temp_mask>0.5).astype(np.int)
-                vis_hm = heatmap[0,0,...].detach().cpu().numpy()
+                vis_uncertainty = depth_uncertainty[0,0,...]
+                vis_uncertainty = vis_uncertainty.detach().cpu().numpy()
+                # vis_hm = heatmap[0,0,...].detach().cpu().numpy()
                 folder_name = os.path.join(output_dir, 'debug_train_pics')
                 depth_folder = os.path.join(folder_name, 'depth')
                 hm_folder = os.path.join(folder_name,'heatmap')
                 mask_folder = os.path.join(folder_name,'mask')
-
+                uncertainty_folder = os.path.join(folder_name,'uncertainty')
                 if not os.path.exists(folder_name):
                     os.makedirs(folder_name)
                 if not os.path.exists(depth_folder):
@@ -152,19 +175,46 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
                     os.makedirs(hm_folder)
                 if not os.path.exists(mask_folder):
                     os.makedirs(mask_folder)
-                plt.imshow(vis_hm)
-                plt.savefig(os.path.join(hm_folder, f'hm_{epoch}_i_{i}.jpg'))
+                if not os.path.exists(uncertainty_folder):
+                    os.makedirs(uncertainty_folder)
+                vis_pic = tensor2im(image[0,...])
+                for hm_idx in range(number_joints):
+                    vis_hm = heatmap[0,hm_idx,...].detach().cpu().numpy()
+                    vis_hm_gt = hm_gt[0,hm_idx,...].detach().cpu().numpy()
+                    # vis_out = np.concatenate([vis_hm, vis_hm_gt], axis = -1)
+                    fig = plt.figure()
+                    plt.subplot(131)
+                    plt.imshow(vis_hm)
+                    plt.subplot(132)
+                    plt.imshow(vis_hm_gt)
+                    plt.subplot(133)
+                    plt.imshow(vis_pic)
+                    plt.savefig(os.path.join(hm_folder, f'hm_{epoch}_i_{i}_joint_{hm_idx}.jpg'))
+                    plt.clf()
+                    plt.close(fig)
+                
+                fig = plt.figure()
                 plt.imshow(vis_depth,cmap='magma_r')
                 plt.savefig(os.path.join(depth_folder, f'depth_{epoch}_i_{i}.jpg'))
+                plt.clf()
+                plt.close(fig)
+                fig = plt.figure()
                 plt.imshow(vis_mask)
                 plt.savefig(os.path.join(mask_folder, f'mask_{epoch}_i_{i}.jpg'))
+                plt.clf()
+                plt.close(fig)
+                fig = plt.figure()
+                plt.imshow(vis_uncertainty,cmap='plasma')    #,cmap='magma_r'
+                plt.savefig(os.path.join(uncertainty_folder, f'uncertainty_{epoch}_i_{i}.jpg'))
+                plt.clf()
+                plt.close(fig)
                 
 
 
 
 
 
-def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, device=torch.device('cuda')):
+def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, device=torch.device('cuda'), logger=logger):
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -172,6 +222,7 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
     losses_hm = AverageMeter()
     losses_mask = AverageMeter()
     losses_fore_depth = AverageMeter()
+    losses_paf = AverageMeter()
 
     metrics_c = RunningAverageDict()
     criterion_hm = PerJointMSELoss().cuda()
@@ -188,20 +239,21 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
             if len(batch) == 0:
                 continue
             data_time.update(time.time() - end)
-            image, depth, mask_gt, hm_gt, wt_gt = batch
+            image, depth, mask_gt, hm_gt, wt_gt, paf_gt = batch
             image = image.to(device)
             depth = depth.to(device)
             mask_gt = mask_gt.to(device)
             hm_gt = hm_gt.to(device)
             wt_gt = wt_gt.to(device)
+            paf_gt = paf_gt.to(device)
 
-            bin_edges, pred, heatmap, mask_prob = model(image)
+            bin_edges, pred, uncertainty ,heatmap, paf_pred, mask_prob, feature_out = model(image)
 
             # vis_mask = (mask_prob > 0.5).astype(np.int)
 
             depth_mask = depth > config.DATASET.MIN_DEPTH
             attention_mask = depth_mask * mask_gt
-            l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True)
+            l_dense = criterion_dense(pred, uncertainty,depth, mask=depth_mask.to(torch.bool), interpolate=True)
             losses_depth.update(l_dense.item())
             l_fore_depth = criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
             losses_fore_depth.update(l_fore_depth.item())
@@ -240,10 +292,12 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
                     temp_mask = mask_prob[0,0,...].detach().cpu().numpy()
                     vis_mask = (temp_mask>0.5).astype(np.int)
                     vis_hm = heatmap[0,0,...].detach().cpu().numpy()
+                    vis_uncertainty = uncertainty[0,0,...].detach().cpu().numpy()
                     folder_name = os.path.join(output_dir, 'debug_test_pics')
                     depth_folder = os.path.join(folder_name, 'depth')
                     hm_folder = os.path.join(folder_name,'heatmap')
                     mask_folder = os.path.join(folder_name,'mask')
+                    uncertainty_folder = os.path.join(folder_name,'uncertainty')
                     if not os.path.exists(folder_name):
                         os.makedirs(folder_name)
                     if not os.path.exists(depth_folder):
@@ -252,12 +306,16 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
                         os.makedirs(hm_folder)
                     if not os.path.exists(mask_folder):
                         os.makedirs(mask_folder)
+                    if not os.path.exists(uncertainty_folder):
+                        os.makedirs(uncertainty_folder)    
                     plt.imshow(vis_hm)
                     plt.savefig(os.path.join(hm_folder, f'hm_{epoch}_i_{i}.jpg'))
                     plt.imshow(vis_depth,cmap='magma_r')
                     plt.savefig(os.path.join(depth_folder, f'depth_{epoch}_i_{i}.jpg'))
                     plt.imshow(vis_mask)
                     plt.savefig(os.path.join(mask_folder, f'mask_{epoch}_i_{i}.jpg'))
+                    plt.imshow(vis_uncertainty,cmap='plasma')   #,cmap='magma_r'
+                    plt.savefig(os.path.join(uncertainty_folder, f'uncertainty_{epoch}_i_{i}.jpg'))
 
     metrics = metrics_c.get_value()
     msg = 'a1: {aps_25:.4f}\ta2: {aps_50:.4f}\ta3: {aps_75:.4f}\t' \
@@ -290,7 +348,7 @@ def train_points3d_bak(config, model, optimizer, loader, epoch, output_dir, writ
 
     orig_w = 1920
     orig_h = 1080
-    points_extractor = get_3d_points(orig_W=orig_w, orig_H =orig_h).cuda()
+    points_extractor = get_3d_points(orig_W=orig_w, orig_H = orig_h).cuda()
 
     
     model.train()
@@ -320,7 +378,7 @@ def train_points3d_bak(config, model, optimizer, loader, epoch, output_dir, writ
             M_matrix = output_M[:,view,...]
             # M_matrix = M_matrix.numpy()
             diff = output_diff[:,view,...]
-            # diff = diff.numpy()
+            
 
             image = image.to(device)
             depth = depth.to(device)
@@ -444,36 +502,95 @@ def train_points3d(config, model, optimizer, loader, epoch, output_dir, writer_d
     losses_vote = AverageMeter()
     losses_objective = AverageMeter()
     losses_distance = AverageMeter()
+    losses_depth = AverageMeter()
+    losses_hm = AverageMeter()
+    losses_paf = AverageMeter()
+    losses_mask = AverageMeter()
     model.train()
 
     end = time.time()
 
     for i, batch in enumerate(loader):
+        if batch == None:
+            continue
         if len(batch) == 0:
             continue
         data_time.update(time.time() - end)
-        output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
-        loss_vote, loss_objective, loss_distance,loss_2d, predicted_3dpose = model(output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose)
+        output_img, output_depth, output_valid_mask,output_hm, output_paf ,output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose,output_num_people = batch
+        batch_num,_,num_joints,_ = output_3d_pose.shape
+       
+        loss_vote,loss_objective,loss_distance, loss_3d, loss_depth, loss_hm, loss_paf,loss_mask ,loss_2d, predicted_3dpose, pred, heatmap, mask_prob, vote_xyz= model(output_img, output_depth, output_valid_mask, output_hm, output_paf,output_weights, output_trans, 
+                                            output_K, output_M, output_diff, output_3d_pose, epoch, i)
+        
+        # if torch.sum(valid) < batch_num:
+        #     valid = False
+        # else:
+        #     valid = True
         if torch.any(torch.isnan(loss_2d)): 
             continue
-        # import pdb; pdb.set_trace()
+        
         loss_vote = loss_vote.mean()
         loss_objective = loss_objective.mean()
         loss_distance = loss_distance.mean()
         loss_2d = loss_2d.mean()
+        loss_3d = loss_3d.mean()
+        loss_paf = loss_paf.mean()
         # loss_3d = loss_3d.mean()
-        loss_3d = loss_vote + loss_objective + loss_distance
+        loss_depth = loss_depth.mean()
+        loss_hm = loss_hm.mean()
+        loss_mask = loss_mask.mean()
 
+        losses_depth.update(loss_depth.item())
+        losses_hm.update(loss_hm.item())
+        losses_mask.update(loss_mask.item())
+        losses_2d.update(loss_2d.item())
         losses_vote.update(loss_vote.item())
+        losses_paf.update(loss_paf.item())
         losses_objective.update(loss_objective.item())
         losses_distance.update(loss_distance.item())
-        losses_2d.update(loss_2d.item())
         losses_3d.update(loss_3d.item())
 
-        loss_total = loss_3d  #loss_2d + 
+        # if (epoch == 0) and (i <= 3000) and ~valid: # first epoch only 2d valid is for 3d network
+        #     import pdb;pdb.set_trace()
+        #     loss_total = loss_2d
+        #     losses_depth.update(loss_depth.item())
+        #     losses_hm.update(loss_hm.item())
+        #     losses_mask.update(loss_mask.item())
+        #     losses_2d.update(loss_2d.item())
+        # else:
+        #     if loss_vote == 0:
+        #         loss_total = loss_2d
+        #         losses_depth.update(loss_depth.item())
+        #         losses_hm.update(loss_hm.item())
+        #         losses_mask.update(loss_mask.item())
+        #         losses_2d.update(loss_2d.item())
+        #     else:
+        #         if loss_distance == 0:
+        #             loss_3d = loss_vote + loss_objective
+        #             loss_total = loss_2d + loss_vote + loss_objective
+        #             losses_vote.update(loss_vote.item())
+        #             losses_objective.update(loss_objective.item())
+        #             losses_depth.update(loss_depth.item())
+        #             losses_hm.update(loss_hm.item())
+        #             losses_mask.update(loss_mask.item())
+        #             losses_2d.update(loss_2d.item())
+        #         else:
+        #             loss_3d = loss_vote + loss_objective + loss_distance 
+        #             loss_total = loss_2d + loss_3d
+        #             losses_depth.update(loss_depth.item())
+        #             losses_hm.update(loss_hm.item())
+        #             losses_mask.update(loss_mask.item())
+        #             losses_2d.update(loss_2d.item())
+        #             losses_vote.update(loss_vote.item())
+        #             losses_objective.update(loss_objective.item())
+        #             losses_distance.update(loss_distance.item())
+        #             losses_3d.update(loss_3d.item())
+        
+        
+        
 
         optimizer.zero_grad()
-        loss_total.backward() # add loss 3d 
+        (loss_3d).backward() # add loss 3d #TODO: loss 3d for debug + loss_2d
         optimizer.step()
 
         data_time.update(time.time() - end)
@@ -491,12 +608,16 @@ def train_points3d(config, model, optimizer, loader, epoch, output_dir, writer_d
                     'loss_distance {losses_distance.val:.3f} ({losses_distance.avg:.3f})\t' \
                     'loss_3d: {losses_3d.val:.3f} ({losses_3d.avg:.3f})\t' \
                     'loss_2d: {losses_2d.val:.3f} ({losses_2d.avg:.3f})\t' \
+                    'loss_depth: {losses_depth.val:.3f} ({losses_depth.avg:.3f})\t' \
+                    'loss_hm: {losses_hm.val:.3f} ({losses_hm.avg:.3f})\t' \
+                    'loss_mask: {losses_mask.val:.3f} ({losses_mask.avg:.3f})\t' \
                     'Memory {memory:.1f}'.format(
                     epoch, i, len(loader), batch_time=batch_time,
                     speed=output_img.size(0) / batch_time.val,
                     data_time=data_time, losses_2d = losses_2d, 
                     losses_3d = losses_3d,losses_vote= losses_vote, 
                     losses_objective = losses_objective,losses_distance = losses_distance,
+                    losses_depth =losses_depth, losses_hm = losses_hm,losses_mask = losses_mask,
                     memory=gpu_memory_usage)
             
             logger.info(msg)
@@ -504,45 +625,140 @@ def train_points3d(config, model, optimizer, loader, epoch, output_dir, writer_d
             writer = writer_dict['writer']
             global_steps = writer_dict['train_global_steps']
             writer.add_scalar('train_2d', losses_2d.val, global_steps)
-            writer.add_scalar('train_3d', losses_2d.val, global_steps)
+            writer.add_scalar('train_3d', losses_3d.val, global_steps)
             writer.add_scalar('train_vote', losses_vote.val, global_steps)
             writer.add_scalar('train_object', losses_objective.val, global_steps)
             writer.add_scalar('train_dist', losses_distance.val, global_steps)
-            # writer.add_scalar('train_loss_hm', losses_hm.val, global_steps)
-            # writer.add_scalar('train_loss_depth', losses_depth.val, global_steps)
+            writer.add_scalar('train_loss_hm', losses_hm.val, global_steps)
+            writer.add_scalar('train_loss_depth', losses_depth.val, global_steps)
+            writer.add_scalar('train_loss_mask', losses_mask.val, global_steps)
+            writer.add_scalar('train_loss_paf', losses_paf.val, global_steps)
             writer_dict['train_global_steps'] = global_steps + 1
-            if i % 100 == 0:
-                    hm_valid_num = len(predicted_3dpose)
-                    fig = plt.figure()
-                    ax1 = plt.axes(projection='3d')
-                    for hm in range(hm_valid_num):
-                        center_point = predicted_3dpose[hm]
-                        if torch.sum(center_point) == 0:
-                            continue
-                        # import pdb;pdb.set_trace()
-                        # center_point = end_point_hm # B,M,3
-                        # 跟output 对齐
-                        pose_gt = output_3d_pose[:,:,hm,:3].float().to(device) / 100
-                        _,_,_,ind2 = nn_distance(center_point,pose_gt)
-                        # by default we only plot the first batch
-                        predicted_center = center_point[0]
-                        gt_center = pose_gt[0]
-                        xd_pred = predicted_center[ind2[0],0].detach().cpu().numpy()
-                        yd_pred = predicted_center[ind2[0],1].detach().cpu().numpy()
-                        zd_pred = predicted_center[ind2[0],2].detach().cpu().numpy()
-                        ax1.scatter3D(xd_pred,zd_pred,-yd_pred, s=5, color=[1,0,0])
-                        xd_gt = gt_center[:,0].detach().cpu().numpy()
-                        yd_gt = gt_center[:,1].detach().cpu().numpy()
-                        zd_gt = gt_center[:,2].detach().cpu().numpy()
-                        ax1.scatter3D(xd_gt,zd_gt,-yd_gt,s=7, color=[0,0,1])
-                        # plot the predicted in red and gt in blue
-                    folder_name = os.path.join(output_dir, 'debug_train_pics')
-                    points_folder = os.path.join(folder_name, 'points')
-                    if not os.path.exists(folder_name):
-                        os.makedirs(folder_name)
-                    if not os.path.exists(points_folder):
-                        os.makedirs(points_folder)
-                    plt.savefig(os.path.join(points_folder, f'points_{epoch}_i_{i}.jpg'))
+            # import pdb; pdb.set_trace()
+            if i % 500 == 0:
+                # save fig
+                
+                pred = pred.clone().detach().cpu().numpy()
+                pred[pred < config.DATASET.MIN_DEPTH] = config.DATASET.MIN_DEPTH
+                pred[pred > config.DATASET.MAX_DEPTH] = config.DATASET.MAX_DEPTH
+                pred[np.isinf(pred)] = config.DATASET.MAX_DEPTH
+                pred[np.isnan(pred)] = config.DATASET.MIN_DEPTH
+                vis_depth = pred[0,0,...]
+                temp_mask = mask_prob[0,0,...].clone().detach().cpu().numpy()
+                vis_mask = (temp_mask>0.5).astype(np.int)
+                poshm = torch.randint(config.NETWORK.NUM_JOINTS,(1,))
+                vis_hm = heatmap[0,poshm.item(),...].clone().detach().cpu().numpy() 
+                folder_name = os.path.join(output_dir, 'debug_train_pics')
+                depth_folder = os.path.join(folder_name, 'depth')
+                hm_folder = os.path.join(folder_name,'heatmap')
+                mask_folder = os.path.join(folder_name,'mask')
+                vote_xyz_folder = os.path.join(folder_name,'joints')
+                if not os.path.exists(folder_name):
+                    os.makedirs(folder_name)
+                if not os.path.exists(depth_folder):
+                    os.makedirs(depth_folder)
+                if not os.path.exists(hm_folder):
+                    os.makedirs(hm_folder)
+                if not os.path.exists(mask_folder):
+                    os.makedirs(mask_folder)
+                if not os.path.exists(vote_xyz_folder):
+                    os.makedirs(vote_xyz_folder) 
+                fig = plt.figure()
+                ax2 = plt.axes(projection='3d')
+                
+                vote_xyz_vis = vote_xyz[0].detach().cpu().numpy()
+                poshm = torch.randint(config.NETWORK.NUM_JOINTS,(1,))
+                ax2.scatter3D(vote_xyz_vis[:,poshm.item(),0],vote_xyz_vis[:,poshm.item(),2],-vote_xyz_vis[:,poshm.item(),1], s=5, color=[1,0,0]) # plot the first keyp
+                pose_gt = output_3d_pose[:,:,poshm.item(),:3].float().to(device) / 100
+                gt_center = pose_gt[0]
+                xd_gt = gt_center[:,0].detach().cpu().numpy()
+                yd_gt = gt_center[:,1].detach().cpu().numpy()
+                zd_gt = gt_center[:,2].detach().cpu().numpy()
+                ax2.scatter3D(xd_gt,zd_gt,-yd_gt,s=20, color=[0,0,1])
+                plt.savefig(os.path.join(vote_xyz_folder, f'points_{epoch}_i_{i}_pose_{poshm.item()}.jpg'))
+                plt.clf()
+                plt.close(fig) 
+                
+                fig = plt.figure()
+                plt.imshow(vis_hm)
+                plt.savefig(os.path.join(hm_folder, f'hm_{epoch}_i_{i}_hm_{poshm.item()}.jpg'))
+                plt.clf()
+                plt.close(fig)
+                fig = plt.figure()
+                plt.imshow(vis_depth,cmap='magma_r')
+                plt.savefig(os.path.join(depth_folder, f'depth_{epoch}_i_{i}.jpg'))
+                plt.clf()
+                plt.close(fig)
+                fig = plt.figure()
+                plt.imshow(vis_mask)
+                plt.savefig(os.path.join(mask_folder, f'mask_{epoch}_i_{i}.jpg'))
+                plt.clf()
+                plt.close(fig)
+                hm_valid_num = len(predicted_3dpose)
+                # hm_valid_num = 19
+                fig = plt.figure()
+                ax1 = plt.axes(projection='3d')
+                # if (epoch or (i > 3000)) and valid: # epoch 0 did not consider the 3d network
+                for hm in range(num_joints):
+                    center_point = predicted_3dpose[:,hm,:,:]
+
+                    # predicted_3dpose[hm]
+                    # center_point = extracted['center']
+
+                    pose_gt = output_3d_pose[:,:,hm,:3].float().to(device) / 100
+                    _,_,_,ind2 = nn_distance(center_point,pose_gt)
+                    # by default we only plot the first batch
+                    predicted_center = center_point[0]
+                    gt_center = pose_gt[0]
+                    xd_pred = predicted_center[ind2[0],0].detach().cpu().numpy()
+                    yd_pred = predicted_center[ind2[0],1].detach().cpu().numpy()
+                    zd_pred = predicted_center[ind2[0],2].detach().cpu().numpy()
+                    ax1.scatter3D(xd_pred,zd_pred,-yd_pred, s=5, color=[1,0,0])
+                    xd_gt = gt_center[:,0].detach().cpu().numpy()
+                    yd_gt = gt_center[:,1].detach().cpu().numpy()
+                    zd_gt = gt_center[:,2].detach().cpu().numpy()
+                    ax1.scatter3D(xd_gt,zd_gt,-yd_gt,s=7, color=[0,0,1])
+                    # plot the predicted in red and gt in blue
+                # folder_name = os.path.join(output_dir, 'debug_train_pics')
+                for kp1,kp2 in CONNS:
+                    center_point_1 = predicted_3dpose[:,kp1,:,:]
+                    center_point_2 = predicted_3dpose[:,kp2,:,:]
+                    pose_gt_1 = output_3d_pose[:,:,kp1,:3].float().to(device) / 100
+                    pose_gt_2 = output_3d_pose[:,:,kp2,:3].float().to(device) / 100
+                    _,_,_,ind1 = nn_distance(center_point_1,pose_gt_1)
+                    _,_,_,ind2 = nn_distance(center_point_2,pose_gt_2)
+                    predicted_center_1 = center_point_1[0]
+                    predicted_center_2 = center_point_2[0]
+                    gt_center_1 = pose_gt_1[0]
+                    gt_center_2 = pose_gt_2[0]
+                    # pred_result
+                    xd_pred_1 = predicted_center_1[ind1[0],0].detach().cpu().numpy()
+                    yd_pred_1 = predicted_center_1[ind1[0],1].detach().cpu().numpy()
+                    zd_pred_1 = predicted_center_1[ind1[0],2].detach().cpu().numpy()
+                    xd_pred_2 = predicted_center_2[ind2[0],0].detach().cpu().numpy()
+                    yd_pred_2 = predicted_center_2[ind2[0],1].detach().cpu().numpy()
+                    zd_pred_2 = predicted_center_2[ind2[0],2].detach().cpu().numpy()
+                    # gt_result
+                    xd_gt_1 = gt_center_1[:,0].detach().cpu().numpy()
+                    yd_gt_1 = gt_center_1[:,1].detach().cpu().numpy()
+                    zd_gt_1 = gt_center_1[:,2].detach().cpu().numpy()
+                    xd_gt_2 = gt_center_2[:,0].detach().cpu().numpy()
+                    yd_gt_2 = gt_center_2[:,1].detach().cpu().numpy()
+                    zd_gt_2 = gt_center_2[:,2].detach().cpu().numpy()
+                    # plotting each joints with number_of people
+                    num_people = len(ind1[0])
+                    for num_idx in range(num_people):
+                        ax1.plot3D([xd_pred_1[num_idx],xd_pred_2[num_idx]],[zd_pred_1[num_idx],zd_pred_2[num_idx]],[-yd_pred_1[num_idx],-yd_pred_2[num_idx]],color=[1,0,0])
+                        ax1.plot3D([xd_gt_1[num_idx],xd_gt_2[num_idx]],[zd_gt_1[num_idx],zd_gt_2[num_idx]],[-yd_gt_1[num_idx],-yd_gt_2[num_idx]],color=[0,0,1])
+                
+                points_folder = os.path.join(folder_name, 'points')
+                if not os.path.exists(folder_name):
+                    os.makedirs(folder_name)
+                if not os.path.exists(points_folder):
+                    os.makedirs(points_folder)
+                plt.savefig(os.path.join(points_folder, f'points_{epoch}_i_{i}.jpg'))
+                plt.clf()
+                plt.close(fig)
 
 
 
@@ -554,46 +770,145 @@ def validate_points3d(config, model, loader, output_dir, epoch=0, vali=False, de
     losses_vote = AverageMeter()
     losses_objective = AverageMeter()
     losses_distance = AverageMeter()
-
+    losses_depth = AverageMeter()
+    losses_hm = AverageMeter()
+    losses_paf = AverageMeter()
+    losses_mask = AverageMeter()
+    losses_total = AverageMeter()
+    mpjpe = AverageMeter()
     model.eval()
 
     with torch.no_grad():
         end = time.time()
         for i, batch in enumerate(loader):
+            if batch == None:
+                continue
             if len(batch) == 0:
                 continue
             data_time.update(time.time() - end)
-            output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
-            loss_vote, loss_objective, loss_distance,loss_2d, predicted_3dpose = model(output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose)
+            output_img, output_depth, output_valid_mask,output_hm, output_paf,output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose, output_num_people = batch
+            batch_num,_,num_joints,_ = output_3d_pose.shape
+            loss_vote,loss_objective,loss_distance, loss_3d, loss_depth, loss_hm, loss_paf,loss_mask ,loss_2d, predicted_3dpose, pred, heatmap, mask_prob, vote_xyz= model(output_img, output_depth, output_valid_mask, output_hm, output_paf,output_weights, output_trans, 
+                                            output_K, output_M, output_diff, output_3d_pose,epoch, i)
+            
+            # if torch.sum(valid) < batch_num:
+            #     valid = False
+            # else:
+            #     valid = True
+
             if torch.any(torch.isnan(loss_2d)): 
                 continue
-            # import pdb; pdb.set_trace()
             loss_vote = loss_vote.mean()
             loss_objective = loss_objective.mean()
             loss_distance = loss_distance.mean()
             loss_2d = loss_2d.mean()
-            # loss_3d = loss_3d.mean()
-            loss_3d = loss_vote + loss_objective + loss_distance
+            loss_3d = loss_3d.mean()
+            loss_paf = loss_paf.mean() 
+            loss_depth = loss_depth.mean()
+            loss_hm = loss_hm.mean()
+            loss_mask = loss_mask.mean()
 
+            losses_depth.update(loss_depth.item())
+            losses_hm.update(loss_hm.item())
+            losses_paf.update(loss_paf.item())
+            losses_mask.update(loss_mask.item())
+            losses_2d.update(loss_2d.item())
             losses_vote.update(loss_vote.item())
             losses_objective.update(loss_objective.item())
             losses_distance.update(loss_distance.item())
-            losses_2d.update(loss_2d.item())
             losses_3d.update(loss_3d.item())
 
-            # loss_total = loss_3d  #loss_2d + 
+            # if epoch == 0: # first epoch only 2d
+            #     loss_total = loss_2d
+            #     losses_depth.update(loss_depth.item())
+            #     losses_hm.update(loss_hm.item())
+            #     losses_mask.update(loss_mask.item())
+            #     losses_2d.update(loss_2d.item())
+            # else:
 
-            # optimizer.zero_grad()
-            # loss_total.backward() # add loss 3d 
-            # optimizer.step()
+            # if ~ valid: # no grad 的原因
+            #     loss_total = loss_2d
+            #     losses_depth.update(loss_depth.item())
+            #     losses_hm.update(loss_hm.item())
+            #     losses_mask.update(loss_mask.item())
+            #     losses_2d.update(loss_2d.item())
+            # else:
+            #     if loss_vote == 0:
+            #         loss_total = loss_2d
+            #         losses_depth.update(loss_depth.item())
+            #         losses_hm.update(loss_hm.item())
+            #         losses_mask.update(loss_mask.item())
+            #         losses_2d.update(loss_2d.item())
+            #     else:
+            #         if losses_distance == 0:
+            #             # loss_total = loss_2d + loss_vote + loss_objective
+            #             losses_vote.update(loss_vote.item())
+            #             losses_objective.update(loss_objective.item())
+            #             losses_depth.update(loss_depth.item())
+            #             losses_hm.update(loss_hm.item())
+            #             losses_mask.update(loss_mask.item())
+            #             losses_2d.update(loss_2d.item())
+            #         else:
+            #             loss_3d = loss_vote + loss_objective + loss_distance 
+            #             # loss_total = loss_2d + loss_3d
+            #             losses_depth.update(loss_depth.item())
+            #             losses_hm.update(loss_hm.item())
+            #             losses_mask.update(loss_mask.item())
+            #             losses_2d.update(loss_2d.item())
+            #             losses_vote.update(loss_vote.item())
+            #             losses_objective.update(loss_objective.item())
+            #             losses_distance.update(loss_distance.item())
+            #             losses_3d.update(loss_3d.item())
+            
+            # calculate the mpjpe metric in torch、
+            mpjpes = []
+            for hm in range(num_joints):
+                center_point = predicted_3dpose[:,hm,:,:]
+                output_vis = output_3d_pose[:,:,hm,3].float().to(device)
+                output_vis_select = (output_vis > 0.1)
+                pose_gt = output_3d_pose[:,:,hm,:3].float().to(device) / 100
+                _,_,_,ind2 = nn_distance(center_point,pose_gt) # B * M
+                # process by batch
+                batch_mpjpe = []
+                for b_idx in range(batch_num):
+                    batch_prop = center_point[b_idx]
+                    gt_center = pose_gt[b_idx]
+                    gt_vis = output_vis_select[b_idx]
+                    gt_people_num = output_num_people[b_idx]
+                    gt_vis = gt_vis[:gt_people_num]
+                    if torch.sum(gt_vis) == 0:
+                        continue
+                    indx = ind2[b_idx]
+                    pred_pro = batch_prop[indx,:]
+                    # calculate the diff
+                    diff = pred_pro - gt_center
+                    diff = diff[:gt_people_num]
+                    diff = diff[gt_vis]
+                    mpjpe_b =torch.mean(torch.sqrt(torch.sum(diff ** 2, dim=-1)))
+                    batch_mpjpe.append(mpjpe_b.unsqueeze(0))
+                if len(batch_mpjpe) == 0:
+                    continue
+                batch_mpjpe = torch.cat(batch_mpjpe, dim=0)
+                hm_mpjpe = torch.mean(batch_mpjpe)
+                mpjpes.append(hm_mpjpe.unsqueeze(0))
+
+            if len(mpjpes) > 0:  
+                mpjpes = torch.cat(mpjpes, dim=0)
+                report_mpjpe = torch.mean(mpjpes)
+                mpjpe.update(report_mpjpe.item())
 
             data_time.update(time.time() - end)
             batch_time.update(time.time() - end)
             end = time.time()
 
+            if i == len(loader) - 1:
+                msg = f'---------------mpjpe final: {mpjpe.avg:.3f} ----------------'
+                logger.info(msg)
+
+
             if i % config.PRINT_FREQ == 0:
                 gpu_memory_usage = torch.cuda.memory_allocated(0)
-                msg =   'Test: [{0}][{1}/{2}]\t' \
+                msg =   'TEST: [{0}][{1}/{2}]\t' \
                         'Time: {batch_time.val:.3f}s ({batch_time.avg:.3f}s)\t' \
                         'Speed: {speed:.1f} samples/s\t' \
                         'Data: {data_time.val:.3f}s ({data_time.avg:.3f}s)\t' \
@@ -602,24 +917,85 @@ def validate_points3d(config, model, loader, output_dir, epoch=0, vali=False, de
                         'loss_distance {losses_distance.val:.3f} ({losses_distance.avg:.3f})\t' \
                         'loss_3d: {losses_3d.val:.3f} ({losses_3d.avg:.3f})\t' \
                         'loss_2d: {losses_2d.val:.3f} ({losses_2d.avg:.3f})\t' \
+                        'loss_depth: {losses_depth.val:.3f} ({losses_depth.avg:.3f})\t' \
+                        'loss_hm: {losses_hm.val:.3f} ({losses_hm.avg:.3f})\t' \
+                        'loss_mask: {losses_mask.val:.3f} ({losses_mask.avg:.3f})\t' \
+                        'mpjpe: {mpjpe.val:.3f} ({mpjpe.avg:.3f})\t' \
                         'Memory {memory:.1f}'.format(
                         epoch, i, len(loader), batch_time=batch_time,
                         speed=output_img.size(0) / batch_time.val,
                         data_time=data_time, losses_2d = losses_2d, 
                         losses_3d = losses_3d,losses_vote= losses_vote, 
                         losses_objective = losses_objective,losses_distance = losses_distance,
+                        losses_depth =losses_depth, losses_hm = losses_hm,losses_mask = losses_mask, mpjpe = mpjpe,
                         memory=gpu_memory_usage)
                 
                 logger.info(msg)
                 # add the vis part to the test
-                if i % 100 == 0:
-                    hm_valid_num = len(predicted_3dpose)
+                if i % 300 == 0:
+                    pred = pred.clone().detach().cpu().numpy()
+                    pred[pred < config.DATASET.MIN_DEPTH] = config.DATASET.MIN_DEPTH
+                    pred[pred > config.DATASET.MAX_DEPTH] = config.DATASET.MAX_DEPTH
+                    pred[np.isinf(pred)] = config.DATASET.MAX_DEPTH
+                    pred[np.isnan(pred)] = config.DATASET.MIN_DEPTH
+                    vis_depth = pred[0,0,...]
+                    temp_mask = mask_prob[0,0,...].clone().detach().cpu().numpy()
+                    vis_mask = (temp_mask>0.5).astype(np.int)
+                    vis_hm = heatmap[0,0,...].clone().detach().cpu().numpy()
+                    folder_name = os.path.join(output_dir, 'debug_test_pics')
+                    depth_folder = os.path.join(folder_name, 'depth')
+                    hm_folder = os.path.join(folder_name,'heatmap')
+                    mask_folder = os.path.join(folder_name,'mask')
+                    vote_xyz_folder = os.path.join(folder_name,'joints')
+                    if not os.path.exists(folder_name):
+                        os.makedirs(folder_name)
+                    if not os.path.exists(depth_folder):
+                        os.makedirs(depth_folder)
+                    if not os.path.exists(hm_folder):
+                        os.makedirs(hm_folder)
+                    if not os.path.exists(mask_folder):
+                        os.makedirs(mask_folder)
+                    if not os.path.exists(vote_xyz_folder):
+                        os.makedirs(vote_xyz_folder)    
+                    fig = plt.figure()
+                    ax2 = plt.axes(projection='3d')
+                    # import pdb; pdb.set_trace()
+                    vote_xyz_vis = vote_xyz[0].detach().cpu().numpy()
+                    poshm = torch.randint(config.NETWORK.NUM_JOINTS,(1,))
+                    ax2.scatter3D(vote_xyz_vis[:,poshm.item(),0],vote_xyz_vis[:,poshm.item(),2],-vote_xyz_vis[:,poshm.item(),1], s=5, color=[1,0,0]) # plot the first keyp
+                    pose_gt = output_3d_pose[:,:,poshm.item(),:3].float().to(device) / 100
+                    gt_center = pose_gt[0]
+                    xd_gt = gt_center[:,0].detach().cpu().numpy()
+                    yd_gt = gt_center[:,1].detach().cpu().numpy()
+                    zd_gt = gt_center[:,2].detach().cpu().numpy()
+                    ax2.scatter3D(xd_gt,zd_gt,-yd_gt,s=20, color=[0,0,1])
+                    plt.savefig(os.path.join(vote_xyz_folder, f'points_{epoch}_i_{i}_pose_{poshm.item()}.jpg'))
+                    plt.clf()
+                    plt.close(fig) 
+
+                    fig = plt.figure()
+                    plt.imshow(vis_hm)
+                    plt.savefig(os.path.join(hm_folder, f'hm_{epoch}_i_{i}.jpg'))
+                    plt.clf()
+                    plt.close(fig) 
+                    fig = plt.figure()
+                    plt.imshow(vis_depth,cmap='magma_r')
+                    plt.savefig(os.path.join(depth_folder, f'depth_{epoch}_i_{i}.jpg'))
+                    plt.clf()
+                    plt.close(fig) 
+                    fig = plt.figure()
+                    plt.imshow(vis_mask)
+                    plt.savefig(os.path.join(mask_folder, f'mask_{epoch}_i_{i}.jpg'))
+                    plt.clf()
+                    plt.close(fig)
+                    # hm_valid_num = len(predicted_3dpose)
                     fig = plt.figure()
                     ax1 = plt.axes(projection='3d')
-                    for hm in range(hm_valid_num):
-                        center_point = predicted_3dpose[hm]
-                        if torch.sum(center_point) == 0:
-                            continue
+                    # if valid:
+                    for hm in range(num_joints):
+                        center_point = predicted_3dpose[:,hm,:,:]
+                        # if torch.sum(center_point) == 0:
+                        #     continue
                         # import pdb;pdb.set_trace()
                         # center_point = end_point_hm # B,M,3
                         # 跟output 对齐
@@ -632,11 +1008,44 @@ def validate_points3d(config, model, loader, output_dir, epoch=0, vali=False, de
                         yd_pred = predicted_center[ind2[0],1].detach().cpu().numpy()
                         zd_pred = predicted_center[ind2[0],2].detach().cpu().numpy()
                         ax1.scatter3D(xd_pred,zd_pred,-yd_pred, s=5, color=[1,0,0])
+
                         xd_gt = gt_center[:,0].detach().cpu().numpy()
                         yd_gt = gt_center[:,1].detach().cpu().numpy()
                         zd_gt = gt_center[:,2].detach().cpu().numpy()
                         ax1.scatter3D(xd_gt,zd_gt,-yd_gt,s=7, color=[0,0,1])
                         # plot the predicted in red and gt in blue
+                    
+                    for kp1,kp2 in CONNS:
+                        center_point_1 = predicted_3dpose[:,kp1,:,:]
+                        center_point_2 = predicted_3dpose[:,kp2,:,:]
+                        pose_gt_1 = output_3d_pose[:,:,kp1,:3].float().to(device) / 100
+                        pose_gt_2 = output_3d_pose[:,:,kp2,:3].float().to(device) / 100
+                        _,_,_,ind1 = nn_distance(center_point_1,pose_gt_1)
+                        _,_,_,ind2 = nn_distance(center_point_2,pose_gt_2)
+                        predicted_center_1 = center_point_1[0]
+                        predicted_center_2 = center_point_2[0]
+                        gt_center_1 = pose_gt_1[0]
+                        gt_center_2 = pose_gt_2[0]
+                        # pred_result
+                        xd_pred_1 = predicted_center_1[ind1[0],0].detach().cpu().numpy()
+                        yd_pred_1 = predicted_center_1[ind1[0],1].detach().cpu().numpy()
+                        zd_pred_1 = predicted_center_1[ind1[0],2].detach().cpu().numpy()
+                        xd_pred_2 = predicted_center_2[ind2[0],0].detach().cpu().numpy()
+                        yd_pred_2 = predicted_center_2[ind2[0],1].detach().cpu().numpy()
+                        zd_pred_2 = predicted_center_2[ind2[0],2].detach().cpu().numpy()
+                        # gt_result
+                        xd_gt_1 = gt_center_1[:,0].detach().cpu().numpy()
+                        yd_gt_1 = gt_center_1[:,1].detach().cpu().numpy()
+                        zd_gt_1 = gt_center_1[:,2].detach().cpu().numpy()
+                        xd_gt_2 = gt_center_2[:,0].detach().cpu().numpy()
+                        yd_gt_2 = gt_center_2[:,1].detach().cpu().numpy()
+                        zd_gt_2 = gt_center_2[:,2].detach().cpu().numpy()
+                        # plotting each joints with number_of people
+                        num_people = len(ind1[0])
+                        for num_idx in range(num_people):
+                            ax1.plot3D([xd_pred_1[num_idx],xd_pred_2[num_idx]],[zd_pred_1[num_idx],zd_pred_2[num_idx]],[-yd_pred_1[num_idx],-yd_pred_2[num_idx]],color=[1,0,0])
+                            ax1.plot3D([xd_gt_1[num_idx],xd_gt_2[num_idx]],[zd_gt_1[num_idx],zd_gt_2[num_idx]],[-yd_gt_1[num_idx],-yd_gt_2[num_idx]],color=[0,0,1])
+
                     folder_name = os.path.join(output_dir, 'debug_test_pics')
                     points_folder = os.path.join(folder_name, 'points')
                     if not os.path.exists(folder_name):
@@ -644,8 +1053,10 @@ def validate_points3d(config, model, loader, output_dir, epoch=0, vali=False, de
                     if not os.path.exists(points_folder):
                         os.makedirs(points_folder)
                     plt.savefig(os.path.join(points_folder, f'points_{epoch}_i_{i}.jpg'))
+                    plt.clf()
+                    plt.close(fig) 
     
-    return losses_3d.avg
+    return mpjpe.avg # 先用深度为标准
                 
 
 
@@ -685,12 +1096,14 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
             if len(batch) == 0:
                 continue
             data_time.update(time.time() - end)
-            output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
+            # output_img, output_depth, output_valid_mask,output_hm, output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose = batch
+            output_img, output_depth, output_valid_mask,output_hm, output_paf,output_weights, output_trans, output_K, output_M, output_diff, output_3d_pose, output_num_people = batch
             batch_num = output_img.shape[0]
             view_num = output_img.shape[1]
             number_joints = config.NETWORK.NUM_JOINTS
             # process in multiple view form
-            total_points = [[[] for _ in range(batch_num)] for _ in range(number_joints)]
+            total_points = [[] for _ in range(batch_num)]
+            gt_total_points = [[] for _ in range(batch_num)]
             for view in range(view_num): 
                 image = output_img[:,view,...]
                 depth = output_depth[:,view,...]
@@ -717,17 +1130,16 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 diff = diff.to(device)
                 
 
-
-                bin_edges, pred, heatmap, mask_prob, feature_out = model(image)
+                bin_edges, pred, heatmap, paf_pred, mask_prob, feature_out = model(image)
 
                 # vis_mask = (mask_prob > 0.5).astype(np.int)
-
+                # import pdb; pdb.set_trace()
                 depth_mask = depth > config.DATASET.MIN_DEPTH
                 attention_mask = depth_mask * mask_gt
                 
                 
-                l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True)
-                losses_depth.update(l_dense.item())
+                # l_dense = criterion_dense(pred, uncertainty,depth, mask=depth_mask.to(torch.bool), interpolate=True)
+                # losses_depth.update(l_dense.item())
                 
                 l_fore_depth = criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
                 print(f'The avg loss is {l_fore_depth.item()}')
@@ -742,8 +1154,8 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 pred[np.isinf(pred)] = config.DATASET.MAX_DEPTH
                 pred[np.isnan(pred)] = config.DATASET.MIN_DEPTH
 
-                depth_gt = depth.cpu().numpy()
-                valid_mask = np.logical_and(depth_gt > config.DATASET.MIN_DEPTH, depth_gt < config.DATASET.MAX_DEPTH)
+                # depth_gt = depth.cpu().numpy()
+                # valid_mask = np.logical_and(depth_gt > config.DATASET.MIN_DEPTH, depth_gt < config.DATASET.MAX_DEPTH)
 
                 # 1. get the mask to do the filtering as "number"
                 fitted_mask = F.interpolate(mask_prob, scale_factor=0.5)
@@ -756,14 +1168,14 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 # erosion mask
                 erode_mask = erode(mask,kernel.detach()) # erode error
                 # import pdb; pdb.set_trace()
-                filter_mask = []
+                filter_mask = erode_mask * filter_gradient_mask
 
-                for hm_idx in range(number_joints):
-                    hm_sampling = heatmap[:,hm_idx:hm_idx + 1,:,:]
-                    hm_max = torch.max(hm_sampling)
-                    choice_generator = 2 * hm_max * torch.rand(hm_sampling.shape).to(device)
-                    hm_sampling_mask = hm_sampling > choice_generator
-                    filter_mask.append(erode_mask * filter_gradient_mask * hm_sampling_mask)
+                # for hm_idx in range(number_joints):
+                #     hm_sampling = heatmap[:,hm_idx:hm_idx + 1,:,:]
+                #     hm_max = torch.max(hm_sampling)
+                #     choice_generator = 2 * hm_max * torch.rand(hm_sampling.shape).to(device)
+                #     hm_sampling_mask = hm_sampling > choice_generator
+                #     filter_mask.append(erode_mask * filter_gradient_mask * hm_sampling_mask)
 
                 ## for global heatmap sampling
                 # hm_sampling,_ = torch.max(heatmap, dim = 1, keepdims=True)
@@ -781,7 +1193,10 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 # TODO : 
                 total_points = points_extractor(pred_process, filter_mask, K_matrix, M_matrix,diff, trans_matrix, total_points, feature_out.clone()) # 
 
-
+                # import pdb;pdb.set_trace()
+                depth = F.interpolate(depth, scale_factor=0.5)
+                gt_total_points = points_extractor(depth.float(), filter_mask, K_matrix, M_matrix,diff, trans_matrix, gt_total_points, feature_out.clone())
+                
                 ## below is the vis part
 
                 # # vis the first batch
@@ -857,43 +1272,95 @@ def validate_depth_vis(config, model, loader, output_dir, epoch=0, vali=False, d
                 
                 # # o3d.visualization.draw_geometries([pcd]) 
              
-            for hm_idx in range(number_joints):
-                for b in range(batch_num):
-                    total_points[hm_idx][b] = torch.cat(total_points[hm_idx][b],dim=0)
+            # for hm_idx in range(number_joints):
+            #     for b in range(batch_num):
+            #         total_points[hm_idx][b] = torch.cat(total_points[hm_idx][b],dim=0)
+
+            for b in range(batch_num):
+                total_points[b] = torch.cat(total_points[b],dim=0)
+                gt_total_points[b] = torch.cat(gt_total_points[b],dim=0)
+
+            # 
+            gt_test_points = gt_total_points[0][:,:3].detach().cpu().numpy()
+
             # existing the 0 joints sampling
             ###### get in the pointcloud input mode
-            for hm_idx in range(number_joints):
-                batch_total_points = total_points[hm_idx]
-                max_points_num = 0
+            # for hm_idx in range(number_joints):
+            #     batch_total_points = total_points[hm_idx]
+            #     max_points_num = 0
+            #     for b in range(batch_num):
+            #         s_batch_points = batch_total_points[b]
+            #         s_num = s_batch_points.shape[0]
+            #         if s_num >= max_points_num:
+            #             max_points_num = s_num
+            #     # assure the max_points_num
+            #     # import pdb; pdb.set_trace()
+            #     for b in range(batch_num):
+            #         s_batch_points = batch_total_points[b]
+            #         s_num = s_batch_points.shape[0]
+            #         if s_num == max_points_num:
+            #             total_points[hm_idx][b] = s_batch_points.unsqueeze(0)
+            #             continue
+            #         offset = max_points_num - s_num
+            #         fill_indx = torch.randint(s_num, (offset, ))
+            #         fill_tensor = s_batch_points[fill_indx,:] # 索引可能不够了
+            #         new_tensor = torch.cat([s_batch_points,fill_tensor],dim=0)
+            #         total_points[hm_idx][b] = new_tensor.unsqueeze(0)
+            #     # import pdb; pdb.set_trace()
+            #     total_points[hm_idx] = torch.cat(total_points[hm_idx],dim=0)
+
+                # ad
+            batch_total_points = total_points
+            max_points_num = 0
+            for b in range(batch_num):
+                s_batch_points = batch_total_points[b]
+                s_num = s_batch_points.shape[0]
+                if s_num >= max_points_num:
+                    max_points_num = s_num
+            num_max_points = 16384
+            if max_points_num > num_max_points:
                 for b in range(batch_num):
                     s_batch_points = batch_total_points[b]
                     s_num = s_batch_points.shape[0]
-                    if s_num >= max_points_num:
-                        max_points_num = s_num
-                # assure the max_points_num
-                # import pdb; pdb.set_trace()
+                    if s_num <= num_max_points:
+                        offset = num_max_points - s_num
+                        if s_num == 0:  # 其他batch 有值，该batch 在该关节点从处无值
+                            fill_tensor = torch.zeros((max_points_num, 35)).to(torch.device('cuda'))
+                        else:
+                            fill_indx = torch.randint(s_num, (offset, ))
+                            fill_tensor = s_batch_points[fill_indx,:] # 索引可能不够了
+                        new_tensor = torch.cat([s_batch_points,fill_tensor],dim=0) # points must be float tensor
+                        total_points[b] = new_tensor.unsqueeze(0)
+                    else:
+                        sample_idx = torch.randperm(s_num)[:num_max_points]
+                        new_tensor = s_batch_points[sample_idx,:]
+                        total_points[b] = new_tensor.unsqueeze(0)
+            else:
                 for b in range(batch_num):
                     s_batch_points = batch_total_points[b]
                     s_num = s_batch_points.shape[0]
                     if s_num == max_points_num:
-                        total_points[hm_idx][b] = s_batch_points.unsqueeze(0)
+                        total_points[b] = s_batch_points.unsqueeze(0)
                         continue
                     offset = max_points_num - s_num
-                    fill_indx = torch.randint(s_num, (offset, ))
-                    fill_tensor = s_batch_points[fill_indx,:] # 索引可能不够了
-                    new_tensor = torch.cat([s_batch_points,fill_tensor],dim=0)
-                    total_points[hm_idx][b] = new_tensor.unsqueeze(0)
-                # import pdb; pdb.set_trace()
-                total_points[hm_idx] = torch.cat(total_points[hm_idx],dim=0)
+                    if s_num == 0:  # 其他batch 有值，该batch 在该关节点从处无值
+                        fill_tensor = torch.zeros((max_points_num, 35)).to(torch.device('cuda'))
+                    else:
+                        fill_indx = torch.randint(s_num, (offset, ))
+                        fill_tensor = s_batch_points[fill_indx,:] # 索引可能不够了
+                    new_tensor = torch.cat([s_batch_points,fill_tensor],dim=0) # points must be float tensor
+                    total_points[b] = new_tensor.unsqueeze(0)
 
-                # ad
-
+            total_points = torch.cat(total_points,dim=0)
 
             # total_points = np.concatenate(total_points, axis=0)
-            # test_points = total_points[0].detach().cpu().numpy()
+            test_points = total_points[0,:,:3].detach().cpu().numpy()
 
-            # with open(f'points_debug/point_total.pkl','wb') as dfile:
-            #     pickle.dump(test_points,dfile)
+            with open(f'points_debug/point_total.pkl','wb') as dfile:
+                pickle.dump(test_points,dfile)
+            with open(f'points_debug/gt_point_total.pkl','wb') as dfile:
+                pickle.dump(gt_test_points,dfile)
+            
             import pdb; pdb.set_trace()
 
                     
@@ -1021,6 +1488,33 @@ def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
     dist1, idx1 = torch.min(pc_dist, dim=2) # (B,N)  每个推测点距离所有真值点最近的 距离 和真值indx
     dist2, idx2 = torch.min(pc_dist, dim=1) # (B,M)  每个真值点距离所有推测点最近的 推测Index 和 距离
     return dist1, idx1, dist2, idx2
+
+# tensor2img tools
+def tensor2im(input_image, imtype=np.uint8):
+    """"将tensor的数据类型转成numpy类型，并反归一化.
+
+    Parameters:
+        input_image (tensor) --  输入的图像tensor数组
+        imtype (type)        --  转换后的numpy的数据类型
+    """
+    mean = [0.485,0.456,0.406] #dataLoader中设置的mean参数
+    std = [0.229,0.224,0.225]  #dataLoader中设置的std参数
+    if not isinstance(input_image, np.ndarray):
+        if isinstance(input_image, torch.Tensor): #如果传入的图片类型为torch.Tensor，则读取其数据进行下面的处理
+            image_tensor = input_image.data
+        else:
+            return input_image
+        image_numpy = image_tensor.detach().cpu().float().numpy()  # convert it into a numpy array
+        if image_numpy.shape[0] == 1:  # grayscale to RGB
+            image_numpy = np.tile(image_numpy, (3, 1, 1))
+        for i in range(len(mean)): #反标准化
+            image_numpy[i] = image_numpy[i] * std[i] + mean[i]
+        image_numpy = image_numpy * 255 #反ToTensor(),从[0,1]转为[0,255]
+        image_numpy = np.transpose(image_numpy, (1, 2, 0))  # 从(channels, height, width)变为(height, width, channels)
+    else:  # 如果传入的是numpy数组,则不做处理
+        image_numpy = input_image
+    return image_numpy.astype(imtype)
+
 
 
 

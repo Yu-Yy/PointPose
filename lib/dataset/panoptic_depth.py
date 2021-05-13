@@ -34,13 +34,29 @@ TEST_LIST = [
     "160906_band3",
 ]
 
+CONNS =  [[0, 1],
+         [0, 2],
+         [0, 3],
+         [3, 4],
+         [4, 5],
+         [0, 9],
+         [9, 10],
+         [10, 11],
+         [2, 6],
+         [2, 12],
+         [6, 7],
+         [7, 8],
+         [12, 13],
+         [13, 14]]
+
 class Panoptic_Depth(Dataset):
     def __init__(self, cfg, image_folder, keypoint_folder, view_set,is_train = True, transform = None): # TODO add keypoint folder
         self.view_set = view_set
         self.view_num = len(self.view_set)
         self.image_folder = image_folder
         self.transform = transform
-        self.overall_view = [1,2,3,4,5]
+        self.conns = CONNS
+        # self.overall_view = [1,2,3,4,5]
         self.depth_size = np.array([512,424])
         self.image_size = np.array([1920,1080])
         # self.input_size = cfg.dataset.input_size 
@@ -117,17 +133,18 @@ class Panoptic_Depth(Dataset):
         match_pose_table = np.array(self.sync_data[scene_index]['hd']['univ_time'])
         target_pose_idx = np.argmin(abs(match_pose_table - univ_time),axis=0) # mask and pose idx
 
+
         # get all the view's depth data to fullfill the monoview est.
-        view_list = self.overall_view.copy()
-        view_list.remove(int(self.view_set[view_index])) # keep
-        depth_fill_idx = []
-        for view in view_list: # find the other views depth index and their corresponding rgb frame idx
-            match_sync_v = np.array(self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{view}']['univ_time'])
-            target_depth_idx = np.argmin(abs(match_sync_v - univ_time),axis =0)
-            if abs(self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{view}']['univ_time'][target_depth_idx] - univ_time) <16.5:
-                depth_fill_idx.append(target_depth_idx)
-            else:
-                depth_fill_idx.append(None)
+        # view_list = self.overall_view.copy()
+        # view_list.remove(int(self.view_set[view_index])) # keep
+        # depth_fill_idx = []
+        # for view in view_list: # find the other views depth index and their corresponding rgb frame idx
+        #     match_sync_v = np.array(self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{view}']['univ_time'])
+        #     target_depth_idx = np.argmin(abs(match_sync_v - univ_time),axis =0)
+        #     if abs(self.ksync_data[scene_index]['kinect']['depth'][f'KINECTNODE{view}']['univ_time'][target_depth_idx] - univ_time) <16.5:
+        #         depth_fill_idx.append(target_depth_idx)
+        #     else:
+        #         depth_fill_idx.append(None)
         
 
 
@@ -304,8 +321,8 @@ class Panoptic_Depth(Dataset):
         if nposes == 0:
             return img, depth_out, mask_gt, None, None
 
-        poses_3d = []
-        poses_vis_3d = []
+        # poses_3d = []
+        # poses_vis_3d = []
         joints = []
         joints_vis = []
         for n in range(nposes):
@@ -334,15 +351,21 @@ class Panoptic_Depth(Dataset):
             anno_vis = np.expand_dims(anno_vis,axis = -1)
             joints_vis.append(anno_vis)
 
-        target_heatmap, target_weight = self.__generate_target_heatmap__(
+        target_heatmap, gt_paf, target_weight = self.__generate_target_heatmap__(
             joints, joints_vis)
+
+        # generate the paf
+        # gt_paf = self.__genPafs__(joints, joints_vis, self.conns)
         # do the crop
         target_heatmap = target_heatmap[:,:,71:411]
         target_heatmap = torch.from_numpy(target_heatmap)
         target_weight = torch.from_numpy(target_weight)
 
+        gt_paf = gt_paf[:,:,71:411]
+        gt_paf = torch.from_numpy(gt_paf)
 
-        return img, depth_out, mask_gt, target_heatmap, target_weight
+
+        return img, depth_out, mask_gt, target_heatmap, target_weight, gt_paf
 
     def __affine_transform__(self, pt, t):
         new_pt = np.array([pt[0], pt[1], 1.]).T
@@ -512,7 +535,7 @@ class Panoptic_Depth(Dataset):
         direct = a - b
         return np.array(b) + np.array([-direct[1], direct[0]], dtype=np.float32)
 
-    def __generate_target_heatmap__(self, joints, joints_vis):
+    def __generate_target_heatmap__(self, joints, joints_vis, threshold=1):
         '''
         :param joints:  [[num_joints, 3]]
         :param joints_vis: [num_joints, 3]
@@ -529,13 +552,18 @@ class Panoptic_Depth(Dataset):
         target = np.zeros(
             (num_joints, self.heatmap_size[1], self.heatmap_size[0]),
             dtype=np.float32)
+        
+        pafs = np.zeros(
+                (len(self.conns) * 2, self.heatmap_size[1], self.heatmap_size[0]),
+                dtype=np.float32)
+
         feat_stride = self.input_size / self.heatmap_size
 
         for n in range(nposes):
             human_scale = 2 * self.__compute_human_scale__(joints[n] / feat_stride, joints_vis[n]) # TODO: compute human scale
             if human_scale == 0:
                 continue
-
+            # generate the heatmap
             cur_sigma = self.sigma * np.sqrt((human_scale / (96.0 * 96.0)))
             tmp_size = cur_sigma * 3
             for joint_id in range(num_joints):
@@ -569,8 +597,39 @@ class Panoptic_Depth(Dataset):
                 target[joint_id][img_y[0]:img_y[1], img_x[0]:img_x[1]] = np.maximum(target[joint_id][img_y[0]:img_y[1], img_x[0]:img_x[1]],
                     g[g_y[0]:g_y[1], g_x[0]:g_x[1]])
             target = np.clip(target, 0, 1)
+            # generate the paf
+            for (k, conn) in enumerate(self.conns):
+                # feat_stride = self.input_size / self.heatmap_size
+                pafa = pafs[k * 2,:, :]
+                pafb = pafs[k * 2 + 1,:, :]
+                points1 = joints[n][conn[0], :]
+                points2 = joints[n][conn[1], :]
+                x_center1 = points1[0] / feat_stride[0]
+                x_center2 = points2[0] / feat_stride[0]
+                y_center1 = points1[1] / feat_stride[1]
+                y_center2 = points2[1] / feat_stride[1]
 
-        return target, target_weight
+                line = np.array((x_center2 - x_center1, y_center2 - y_center1))
+                if np.linalg.norm(line) == 0:
+                    continue
+                x_min = max(int(round(min(x_center1, x_center2) - threshold)), 0)
+                x_max = min(int(round(max(x_center1, x_center2) + threshold)), self.heatmap_size[0])
+                y_min = max(int(round(min(y_center1, y_center2) - threshold)), 0)
+                y_max = min(int(round(max(y_center1, y_center2) + threshold)), self.heatmap_size[1])
+
+                line /= np.linalg.norm(line)
+                vx, vy = [paf[y_min:y_max, x_min:x_max] for paf in (pafa, pafb)]
+                xs = np.arange(x_min, x_max)
+                ys = np.arange(y_min, y_max)[:, np.newaxis]
+
+                v0, v1 = xs - x_center1, ys - y_center1
+                dist = abs(v0 * line[1] - v1 * line[0])
+                idxs = dist < threshold
+
+                pafa[y_min:y_max, x_min:x_max][idxs] = line[0]
+                pafb[y_min:y_max, x_min:x_max][idxs] = line[1]
+
+        return target, pafs,target_weight
 
     def __compute_human_scale__ (self, pose, joints_vis):
         idx = joints_vis[:, 0] == 1
@@ -581,6 +640,89 @@ class Panoptic_Depth(Dataset):
         # return np.clip((maxy - miny) * (maxx - minx), 1.0 / 4 * 256**2,
         #                4 * 256**2)
         return np.clip(np.maximum(maxy - miny, maxx - minx)**2,  1.0 / 4 * 96**2, 4 * 96**2)    
+    
+    # def __genPafs__(self, joints, joints_vis, conns, threshold=1):  # stride 1 threshold 1
+
+    #     nposes = len(joints)
+    #     # num_joints = self.num_joints
+    #     # target_weight = np.zeros((num_joints, 1), dtype=np.float32)
+    #     # for i in range(num_joints):
+    #     #     for n in range(nposes):
+    #     #         if joints_vis[n][i, 0] == 1:
+    #     #             target_weight[i, 0] = 1
+    #     pafs = np.zeros(
+    #             (len(conns) * 2, self.heatmap_size[1], self.heatmap_size[0]),
+    #             dtype=np.float32)
+    #     # h, w = height // stride, width // stride
+    #     feat_stride = self.input_size / self.heatmap_size
+
+    #     for n in range(nposes):
+    #         human_scale = 2 * self.__compute_human_scale__(joints[n] / feat_stride, joints_vis[n]) # TODO: compute human scale
+    #         if human_scale == 0:
+    #             continue
+    #         for (k, conn) in enumerate(conns):
+    #             feat_stride = self.input_size / self.heatmap_size
+    #             pafa = pafs[k * 2,:, :]
+    #             pafb = pafs[k * 2 + 1,:, :]
+    #             points1 = joints[n][conn[0], :]
+    #             points2 = joints[n][conn[1], :]
+    #             x_center1 = points1[0] / feat_stride[0]
+    #             x_center2 = points2[0] / feat_stride[0]
+    #             y_center1 = points1[1] / feat_stride[1]
+    #             y_center2 = points2[1] / feat_stride[1]
+
+    #             line = np.array((x_center2 - x_center1, y_center2 - y_center1))
+    #             if np.linalg.norm(line) == 0:
+    #                 continue
+    #             x_min = max(int(round(min(x_center1, x_center2) - threshold)), 0)
+    #             x_max = min(int(round(max(x_center1, x_center2) + threshold)), self.heatmap_size[0])
+    #             y_min = max(int(round(min(y_center1, y_center2) - threshold)), 0)
+    #             y_max = min(int(round(max(y_center1, y_center2) + threshold)), self.heatmap_size[1])
+
+    #             line /= np.linalg.norm(line)
+    #             vx, vy = [paf[y_min:y_max, x_min:x_max] for paf in (pafa, pafb)]
+    #             xs = np.arange(x_min, x_max)
+    #             ys = np.arange(y_min, y_max)[:, np.newaxis]
+
+    #             v0, v1 = xs - x_center1, ys - y_center1
+    #             dist = abs(v0 * line[1] - v1 * line[0])
+    #             idxs = dist < threshold
+
+    #             pafa[y_min:y_max, x_min:x_max][idxs] = line[0]
+    #             pafb[y_min:y_max, x_min:x_max][idxs] = line[1]
+
+    #     # # pafs = np.zeros((h, w, len(conns) * 2)) # need the connection matrix
+    #     # for (k, conn) in enumerate(conns):
+    #     #     pafa = pafs[:, :, k * 2]
+    #     #     pafb = pafs[:, :, k * 2 + 1]
+    #     #     points1 = kpts[:, conn[0], :]
+    #     #     points2 = kpts[:, conn[1], :]
+
+    #     #     for ((x_center1, y_center1, vis1), (x_center2, y_center2, vis2)) in zip(points1, points2):
+    #     #         if vis1 == 0 or vis2 == 0:
+    #     #             continue
+    #     #         x_center1, y_center1, x_center2, y_center2 = [s / stride for s in (x_center1, y_center1, x_center2, y_center2)]
+    #     #         line = np.array((x_center2 - x_center1, y_center2 - y_center1))
+    #     #         if np.linalg.norm(line) == 0:
+    #     #             continue
+    #     #         x_min = max(int(round(min(x_center1, x_center2) - threshold)), 0)
+    #     #         x_max = min(int(round(max(x_center1, x_center2) + threshold)), w)
+    #     #         y_min = max(int(round(min(y_center1, y_center2) - threshold)), 0)
+    #     #         y_max = min(int(round(max(y_center1, y_center2) + threshold)), h)
+
+    #     #         line /= np.linalg.norm(line)
+    #     #         vx, vy = [paf[y_min:y_max, x_min:x_max] for paf in (pafa, pafb)]
+    #     #         xs = np.arange(x_min, x_max)
+    #     #         ys = np.arange(y_min, y_max)[:, np.newaxis]
+
+    #     #         v0, v1 = xs - x_center1, ys - y_center1
+    #     #         dist = abs(v0 * line[1] - v1 * line[0])
+    #     #         idxs = dist < threshold
+
+    #     #         pafa[y_min:y_max, x_min:x_max][idxs] = line[0]
+    #     #         pafb[y_min:y_max, x_min:x_max][idxs] = line[1]
+
+    #     return pafs
 
 if __name__ == '__main__':
     img_path = '/Extra/panzhiyu/CMU_kinect_data/'

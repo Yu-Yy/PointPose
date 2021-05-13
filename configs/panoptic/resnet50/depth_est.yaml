@@ -6,7 +6,7 @@ BACKBONE_MODEL: 'pose_higher_hrnet' #'pose_resnet'
 MODEL: 'hrnet_adabins'
 DATA_DIR: ''
 GPUS:  '0,1'
-OUTPUT_DIR: 'output_multitask_2d_depth_5cam' #_mask_attention #F4 is another trial # F3 correct the projection bug # F2 is the last bug with clamp # H2 is the heatmap with the correct size
+OUTPUT_DIR: 'output_mul_0408_paf' #'output_mul_0512_uncertainty' #'output_uncertain_0511' #_mask_attention #F4 is another trial # F3 correct the projection bug # F2 is the last bug with clamp # H2 is the heatmap with the correct size
 LOG_DIR: 'log'
 WORKERS: 16
 PRINT_FREQ: 100
@@ -20,14 +20,14 @@ DATASET:
     - 1
     - 2
     - 3
-    - 4
-    - 5
+    - 9
+    - 10
   TEST_VIEW_SET:
-    - 1
-    - 2
-    - 3
     - 4
     - 5
+    - 6
+    - 7
+    - 8
   COLOR_RGB: True
   TRAIN_DATASET: 'panoptic_depth'
   TEST_DATASET: 'panoptic_depth'
@@ -49,7 +49,7 @@ DATASET:
     - 1080
 NETWORK: # for the 
   FEATURE: True 
-  PRETRAINED_BACKBONE: 'models/pose_higher_hrnet_w32_512.pth' #pose_higher_hrnet_w32_512.pth 'models/pose_resnet50_panoptic.pth.tar' # change this 
+  PRETRAINED_BACKBONE: 'models_bak/model_best.pth.tar'    #'models/pose_higher_hrnet_w32_512.pth' #pose_higher_hrnet_w32_512.pth 'models/pose_resnet50_panoptic.pth.tar' # change this 
   PRETRAINED:  ''  # 'models/pytorch/imagenet/resnet50-19c8e357.pth'
   TARGET_TYPE: gaussian
   IMAGE_SIZE:
@@ -59,7 +59,8 @@ NETWORK: # for the
   - 480
   - 256 # 其实用不到
   SIGMA: 6 # larger sigma
-  NUM_JOINTS: 19
+  NUM_JOINTS: 15
+  NUM_CONNS: 14
   USE_GT: False
   POOLING: False
 
@@ -143,17 +144,17 @@ POSE_RESNET:   # 替换成higher_HRnet
 LOSS:
   USE_TARGET_WEIGHT: true
 TRAIN:
-  BATCH_SIZE: 8
+  BATCH_SIZE: 6
   SHUFFLE: true
   BEGIN_EPOCH: 0
-  END_EPOCH: 10
-  RESUME: true
+  END_EPOCH: 20
+  RESUME: false #true
   OPTIMIZER: adam
   LR: 0.0001
 
 TEST:
   MODEL_FILE: 'model_best.pth.tar' #'final_state.pth.tar' 
-  BATCH_SIZE: 8 # orig 6
+  BATCH_SIZE: 4 # orig 6
 DEBUG:
   DEBUG: true
   SAVE_HEATMAPS_GT: true
