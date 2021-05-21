@@ -10,24 +10,24 @@ class SILogLoss(nn.Module):  # Main loss function used in AdaBins paper
         super(SILogLoss, self).__init__()
         self.name = 'SILog'
 
-    def forward(self, input, uncertainty ,target, mask=None, interpolate=True):
+    def forward(self, input,target, mask=None, interpolate=True): #uncertainty ,
         if interpolate:
             input = nn.functional.interpolate(input, target.shape[-2:], mode='bilinear', align_corners=True)
-            uncertainty = nn.functional.interpolate(uncertainty, target.shape[-2:], mode='bilinear', align_corners=True)
+            # uncertainty = nn.functional.interpolate(uncertainty, target.shape[-2:], mode='bilinear', align_corners=True)
         if mask is not None:
             input = input[mask]
             target = target[mask]
-            uncertainty = uncertainty[mask]
+            # uncertainty = uncertainty[mask]
         g = torch.log(input) - torch.log(target)
         # consider the uncertainty
-        g_un = g * torch.exp(-uncertainty) + uncertainty # augment the punishment
+        # g_un = g * torch.exp(-uncertainty) + uncertainty # augment the punishment
 
         # n, c, h, w = g.shape
         # norm = 1/(h*w)
         # Dg = norm * torch.sum(g**2) - (0.85/(norm**2)) * (torch.sum(g))**2
 
         # Dg = torch.var(g) + 0.15 * torch.pow(torch.mean(g), 2)
-        Dg = torch.var(g) + torch.pow(torch.mean(g_un), 2) #0.15 * 
+        Dg = torch.var(g) + torch.pow(torch.mean(g), 2) #0.15 * 
         return 10 * torch.sqrt(Dg)
 
 

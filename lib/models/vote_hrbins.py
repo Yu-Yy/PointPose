@@ -160,11 +160,13 @@ class Vote_Hr_Adbins(nn.Module):
         # if ((epoch>=1) or (idx > 3000)) and valid: 
         for b in range(batch_num):
             total_points[b] = torch.cat(total_points[b],dim=0) # view fusion
+            total_vectors[b] = torch.cat(total_vectors[b],dim=0) # ray vector (no direction distinguish)
         # import pdb;pdb.set_trace()
         # existing the 0 joints sampling
         ###### get in the pointcloud input mode
         # for hm_idx in range(number_joints):
-        batch_total_points = total_points
+        batch_total_points = total_points.copy()
+        batch_total_vectors = total_vectors.copy()
         max_points_num = 0
         for b in range(batch_num):
             s_batch_points = batch_total_points[b]
@@ -175,37 +177,51 @@ class Vote_Hr_Adbins(nn.Module):
         if max_points_num > self.num_max_points:
             for b in range(batch_num):
                 s_batch_points = batch_total_points[b]
+                s_batch_vectors = batch_total_vectors[b]
                 s_num = s_batch_points.shape[0]
                 if s_num <= self.num_max_points:
                     offset = self.num_max_points - s_num
                     if s_num == 0:  # 其他batch 有值，该batch 在该关节点从处无值
                         fill_tensor = torch.zeros((max_points_num, 35)).to(self.device)
+                        fill_vectors = torch.zeros((max_points_num, 3)).to(self.device)
                     else:
                         fill_indx = torch.randint(s_num, (offset, ))
                         fill_tensor = s_batch_points[fill_indx,:] # 索引可能不够了
+                        fill_vectors = s_batch_vectors[fill_indx,:]
                     new_tensor = torch.cat([s_batch_points,fill_tensor],dim=0) # points must be float tensor
+                    new_vector = torch.cat([s_batch_vectors,fill_vectors],dim=0)
                     total_points[b] = new_tensor.unsqueeze(0)
+                    total_vectors[b] = new_vector.unsqueeze(0)
                 else:
                     sample_idx = torch.randperm(s_num)[:self.num_max_points]
                     new_tensor = s_batch_points[sample_idx,:]
+                    total_vectors[b] = new_vector.unsqueeze(0)
                     total_points[b] = new_tensor.unsqueeze(0)
         else:
             for b in range(batch_num):
                 s_batch_points = batch_total_points[b]
+                s_batch_vectors = batch_total_vectors[b]
                 s_num = s_batch_points.shape[0]
                 if s_num == max_points_num:
+                    total_vectors[b]
                     total_points[b] = s_batch_points.unsqueeze(0)
+                    total_vectors[b] = s_batch_vectors.unsqueeze(0)
                     continue
                 offset = max_points_num - s_num
                 if s_num == 0:  # 其他batch 有值，该batch 在该关节点从处无值
                     fill_tensor = torch.zeros((max_points_num, 35)).to(self.device)
+                    fill_vectors = torch.zeros((max_points_num, 3)).to(self.device)
                 else:
                     fill_indx = torch.randint(s_num, (offset, ))
                     fill_tensor = s_batch_points[fill_indx,:] # 索引可能不够了
+                    fill_vectors = s_batch_vectors[fill_indx,:]
                 new_tensor = torch.cat([s_batch_points,fill_tensor],dim=0) # points must be float tensor
+                new_vector = torch.cat([s_batch_vectors,fill_vectors],dim=0)
                 total_points[b] = new_tensor.unsqueeze(0)
+                total_vectors[b] = new_vector.unsqueeze(0)
 
         total_points = torch.cat(total_points,dim=0)
+        total_vectors = torch.cat(total_vectors,dim=0)
         # send into the vote net 
         # loss_3d = torch.tensor(0).float().to(self.device)
         # loss_distance = torch.tensor(0).float().to(self.device)

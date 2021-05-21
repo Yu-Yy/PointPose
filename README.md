@@ -1,15 +1,22 @@
-# VoxelPose
-[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/end-to-end-estimation-of-multi-person-3d/3d-multi-person-pose-estimation-on-campus)](https://paperswithcode.com/sota/3d-multi-person-pose-estimation-on-campus?p=end-to-end-estimation-of-multi-person-3d) [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/end-to-end-estimation-of-multi-person-3d/3d-multi-person-pose-estimation-on-shelf)](https://paperswithcode.com/sota/3d-multi-person-pose-estimation-on-shelf?p=end-to-end-estimation-of-multi-person-3d) [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/end-to-end-estimation-of-multi-person-3d/3d-multi-person-pose-estimation-on-cmu)](https://paperswithcode.com/sota/3d-multi-person-pose-estimation-on-cmu?p=end-to-end-estimation-of-multi-person-3d)
+# PointPose
 
+## File and Docs Illustration
+`run/train_3dpose.py(train_depth.py)` is the peripheral interface, `lib\depth_core\...` contains the .py file for loss, utils function, and model interface, main file is the `function.py`.
+The model file is in the diractory `lib\models\...`,`vote_hrbins.py` is the combing the 2D part and 3D part. 2D part model is `hrnet_adbins.py` , 3D part is in `votepose_utils.py`.
+config file is in `configs\panoptic\resnet50\depth_est.yaml` and `pose3d_est.yaml`.
+Ray vector for each point is the variable `total_vector` in `vote_hrbins.py`, generation function is in `depth_core\utils_depth.py` the `get_3d_points` class.
+The best 2D model file is in `\home\panzhiyu\project\3d_pose\voxelpose-pytorch\models_bak\model_best.pth.tar` 
 
+## Training function
+```
+CUDA_VISIBLE_DEVICES=0,1 python train_3dpose.py --cfg configs\panoptic\resnet50\pose3d_est.yaml
+CUDA_VISIBLE_DEVICES=0,1 python train_depth.py --cfg configs\panoptic\resnet50\depth_est.yaml
+```
 
-This is the official implementation for:
-> [**VoxelPose: Towards Multi-Camera 3D Human Pose Estimation in Wild Environment**](https://arxiv.org/abs/2004.06239),            
-> Hanyue Tu, Chunyu Wang, Wenjun Zeng        
-> *ECCV 2020 (Oral) ([arXiv 2004.06239](https://arxiv.org/abs/2004.06239))*
-
-
-<img src="data/panoptic2.gif" width="800"/>
+## Testing function
+```
+For further testing with the compliment of NMS.
+```
 
 
 ## Installation
@@ -70,34 +77,6 @@ ${POSE_ROOT}
             |   |-- calibration_160224_haggling1.json
             |-- 160226_haggling1  
             |-- ...
-```
-
-## Training
-### CMU Panoptic dataset
-
-Train and validate on the five selected camera views. You can specify the GPU devices and batch size per GPU  in the config file. We trained our models on two GPUs.
-```
-python run/train_3d.py --cfg configs/panoptic/resnet50/prn64_cpn80x80x20_960x512_cam5.yaml
-```
-### Shelf/Campus datasets
-```
-python run/train_3d.py --cfg configs/shelf/prn64_cpn80x80x20.yaml
-python run/train_3d.py --cfg configs/campus/prn64_cpn80x80x20.yaml
-```
-
-## Evaluation
-### CMU Panoptic dataset
-
-Evaluate the models. It will print evaluation results to the screen./
-```
-python test/evaluate.py --cfg configs/panoptic/resnet50/prn64_cpn80x80x20_960x512_cam5.yaml
-```
-### Shelf/Campus datasets
-
-It will print the PCP results to the screen.
-```
-python test/evaluate.py --cfg configs/shelf/prn64_cpn80x80x20.yaml
-python test/evaluate.py --cfg configs/campus/prn64_cpn80x80x20.yaml
 ```
 
 ## Citation

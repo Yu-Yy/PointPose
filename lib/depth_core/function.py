@@ -76,16 +76,16 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
         paf_gt = paf_gt.to(device)
         
         # import pdb; pdb.set_trace()
-        bin_edges, pred, depth_uncertainty ,heatmap, paf_pred, mask_prob, feature_out = model(image) # depth is in half resolution
+        bin_edges, pred,heatmap, paf_pred, mask_prob, feature_out = model(image) # depth is in half resolution depth_uncertainty ,
 
         # depth loss
         depth_mask = depth > config.DATASET.MIN_DEPTH
         attention_mask = depth_mask * mask_gt
-        l_dense = criterion_dense(pred, depth_uncertainty,depth, mask=depth_mask.to(torch.bool), interpolate=True)
+        l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True) #depth_uncertainty,
         # add one heatmap mask to pay more attention to the keypoint position
 
 
-        l_dense_attention = criterion_dense_attention(pred, depth_uncertainty,depth, mask=attention_mask.to(torch.bool), interpolate=True)
+        l_dense_attention = criterion_dense_attention(pred,depth, mask=attention_mask.to(torch.bool), interpolate=True)# depth_uncertainty,
         l_chamfer = criterion_chamfer(bin_edges, depth.float())
         # l_grad = criterion_grad(pred, depth.detach().float(), mask=attention_mask.to(torch.bool), interpolate=True) # do not add this loss 
         # print(l_grad)
@@ -159,14 +159,14 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
                 vis_depth = pred[0,0,...]
                 temp_mask = mask_prob[0,0,...].detach().cpu().numpy()
                 vis_mask = (temp_mask>0.5).astype(np.int)
-                vis_uncertainty = depth_uncertainty[0,0,...]
-                vis_uncertainty = vis_uncertainty.detach().cpu().numpy()
+                # vis_uncertainty = depth_uncertainty[0,0,...]
+                # vis_uncertainty = vis_uncertainty.detach().cpu().numpy()
                 # vis_hm = heatmap[0,0,...].detach().cpu().numpy()
                 folder_name = os.path.join(output_dir, 'debug_train_pics')
                 depth_folder = os.path.join(folder_name, 'depth')
                 hm_folder = os.path.join(folder_name,'heatmap')
                 mask_folder = os.path.join(folder_name,'mask')
-                uncertainty_folder = os.path.join(folder_name,'uncertainty')
+                # uncertainty_folder = os.path.join(folder_name,'uncertainty')
                 if not os.path.exists(folder_name):
                     os.makedirs(folder_name)
                 if not os.path.exists(depth_folder):
@@ -175,8 +175,8 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
                     os.makedirs(hm_folder)
                 if not os.path.exists(mask_folder):
                     os.makedirs(mask_folder)
-                if not os.path.exists(uncertainty_folder):
-                    os.makedirs(uncertainty_folder)
+                # if not os.path.exists(uncertainty_folder):
+                #     os.makedirs(uncertainty_folder)
                 vis_pic = tensor2im(image[0,...])
                 for hm_idx in range(number_joints):
                     vis_hm = heatmap[0,hm_idx,...].detach().cpu().numpy()
@@ -203,11 +203,11 @@ def train_depth(config, model, optimizer, loader, epoch, output_dir, writer_dict
                 plt.savefig(os.path.join(mask_folder, f'mask_{epoch}_i_{i}.jpg'))
                 plt.clf()
                 plt.close(fig)
-                fig = plt.figure()
-                plt.imshow(vis_uncertainty,cmap='plasma')    #,cmap='magma_r'
-                plt.savefig(os.path.join(uncertainty_folder, f'uncertainty_{epoch}_i_{i}.jpg'))
-                plt.clf()
-                plt.close(fig)
+                # fig = plt.figure()
+                # plt.imshow(vis_uncertainty,cmap='plasma')    #,cmap='magma_r'
+                # plt.savefig(os.path.join(uncertainty_folder, f'uncertainty_{epoch}_i_{i}.jpg'))
+                # plt.clf()
+                # plt.close(fig)
                 
 
 
@@ -247,13 +247,13 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
             wt_gt = wt_gt.to(device)
             paf_gt = paf_gt.to(device)
 
-            bin_edges, pred, uncertainty ,heatmap, paf_pred, mask_prob, feature_out = model(image)
+            bin_edges, pred, heatmap, paf_pred, mask_prob, feature_out = model(image) #uncertainty ,
 
             # vis_mask = (mask_prob > 0.5).astype(np.int)
 
             depth_mask = depth > config.DATASET.MIN_DEPTH
             attention_mask = depth_mask * mask_gt
-            l_dense = criterion_dense(pred, uncertainty,depth, mask=depth_mask.to(torch.bool), interpolate=True)
+            l_dense = criterion_dense(pred, depth, mask=depth_mask.to(torch.bool), interpolate=True) #uncertainty,
             losses_depth.update(l_dense.item())
             l_fore_depth = criterion_fore_depth(pred, depth, mask=attention_mask.to(torch.bool), interpolate=True)
             losses_fore_depth.update(l_fore_depth.item())
@@ -292,12 +292,12 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
                     temp_mask = mask_prob[0,0,...].detach().cpu().numpy()
                     vis_mask = (temp_mask>0.5).astype(np.int)
                     vis_hm = heatmap[0,0,...].detach().cpu().numpy()
-                    vis_uncertainty = uncertainty[0,0,...].detach().cpu().numpy()
+                    # vis_uncertainty = uncertainty[0,0,...].detach().cpu().numpy()
                     folder_name = os.path.join(output_dir, 'debug_test_pics')
                     depth_folder = os.path.join(folder_name, 'depth')
                     hm_folder = os.path.join(folder_name,'heatmap')
                     mask_folder = os.path.join(folder_name,'mask')
-                    uncertainty_folder = os.path.join(folder_name,'uncertainty')
+                    # uncertainty_folder = os.path.join(folder_name,'uncertainty')
                     if not os.path.exists(folder_name):
                         os.makedirs(folder_name)
                     if not os.path.exists(depth_folder):
@@ -306,16 +306,16 @@ def validate_depth(config, model, loader, output_dir, epoch=0, vali=False, devic
                         os.makedirs(hm_folder)
                     if not os.path.exists(mask_folder):
                         os.makedirs(mask_folder)
-                    if not os.path.exists(uncertainty_folder):
-                        os.makedirs(uncertainty_folder)    
+                    # if not os.path.exists(uncertainty_folder):
+                    #     os.makedirs(uncertainty_folder)    
                     plt.imshow(vis_hm)
                     plt.savefig(os.path.join(hm_folder, f'hm_{epoch}_i_{i}.jpg'))
                     plt.imshow(vis_depth,cmap='magma_r')
                     plt.savefig(os.path.join(depth_folder, f'depth_{epoch}_i_{i}.jpg'))
                     plt.imshow(vis_mask)
                     plt.savefig(os.path.join(mask_folder, f'mask_{epoch}_i_{i}.jpg'))
-                    plt.imshow(vis_uncertainty,cmap='plasma')   #,cmap='magma_r'
-                    plt.savefig(os.path.join(uncertainty_folder, f'uncertainty_{epoch}_i_{i}.jpg'))
+                    # plt.imshow(vis_uncertainty,cmap='plasma')   #,cmap='magma_r'
+                    # plt.savefig(os.path.join(uncertainty_folder, f'uncertainty_{epoch}_i_{i}.jpg'))
 
     metrics = metrics_c.get_value()
     msg = 'a1: {aps_25:.4f}\ta2: {aps_50:.4f}\ta3: {aps_75:.4f}\t' \
