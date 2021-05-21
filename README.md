@@ -1,19 +1,19 @@
 # PointPose
 
 ## File and Docs Illustration
-`run/train_3dpose.py(train_depth.py)` is the peripheral interface
+`run/train_3dpose.py(train_depth.py)` is the peripheral interface.
 
- `lib\depth_core\...` contains the .py file for loss, utils function, and model interface, main file is the `function.py`.
+ `lib\depth_core\...` contains  .py files for loss, utils function, and model interface. The main file is `function.py`.
 
-The model file is in the diractory `lib\models\...`,`vote_hrbins.py` is the combing the 2D part and 3D part.
+Model files are in the diractory `lib\models\...`; `vote_hrbins.py` is the combing of  2D part and 3D part.
 
-2D part model is `hrnet_adbins.py` , 3D part is in `votepose_utils.py`.
+2D part model is in `hrnet_adbins.py` , 3D part is in `votepose_utils.py`.
 
-Config file is in `configs\panoptic\resnet50\depth_est.yaml` and `pose3d_est.yaml`.
+Config files are in `configs\panoptic\resnet50\depth_est.yaml` and `pose3d_est.yaml`.
 
-Ray vector for each point is the variable `total_vector` in `vote_hrbins.py`, generation function is in `depth_core\utils_depth.py` the `get_3d_points` class.
+Ray vector for each point is the variable called `total_vector` in `vote_hrbins.py`. Its generation function is in `depth_core\utils_depth.py` , `get_3d_points` class.
 
-The best 2D model file is in `\home\panzhiyu\project\3d_pose\voxelpose-pytorch\models_bak\model_best.pth.tar` 
+The best 2D model file is in `\home\panzhiyu\project\3d_pose\voxelpose-pytorch\models_bak\model_best.pth.tar`. 
 
 ## Training function
 ```
